@@ -1470,7 +1470,6 @@ def init_db() -> None:
                 name           TEXT NOT NULL,
                 contact_person TEXT,
                 phone          TEXT,
-                email          TEXT,
                 address        TEXT,
                 delivery_address TEXT,
                 district_id    INTEGER NOT NULL,
@@ -3833,7 +3832,7 @@ def render_quotation_letter_page(user: Dict) -> None:
         st.text_input(
             "Salesperson contact",
             key=letter_form_key("salesperson_contact"),
-            help="Phone or email to show beneath the signature.",
+            help="Phone to show beneath the signature.",
             disabled=user["role"] != "admin",
         )
         st.text_area(

@@ -320,7 +320,6 @@ CREATE TABLE IF NOT EXISTS customers (
     name TEXT,
     company_name TEXT,
     phone TEXT,
-    email TEXT,
     address TEXT,
     delivery_address TEXT,
     remarks TEXT,
@@ -571,6 +570,10 @@ def ensure_schema_upgrades(conn):
     add_column("import_history", "imported_by", "INTEGER")
     add_column("work_reports", "grid_payload", "TEXT")
     add_column("work_reports", "attachment_path", "TEXT")
+
+    # Remove stored email data for privacy; the app no longer collects it.
+    if has_column("customers", "email"):
+        conn.execute("UPDATE customers SET email=NULL WHERE email IS NOT NULL")
 
     cur = conn.execute(
         """
@@ -1897,7 +1900,7 @@ def merge_customer_records(conn, customer_ids) -> bool:
     placeholders = ",".join(["?"] * len(ids))
     query = dedent(
         f"""
-        SELECT customer_id, name, company_name, phone, email, address, delivery_address, remarks, purchase_date, product_info, delivery_order_code, sales_person, created_at
+        SELECT customer_id, name, company_name, phone, address, delivery_address, remarks, purchase_date, product_info, delivery_order_code, sales_person, created_at
         FROM customers
         WHERE customer_id IN ({placeholders})
         """
@@ -1928,8 +1931,6 @@ def merge_customer_records(conn, customer_ids) -> bool:
     delivery_values = [v for v in delivery_values if v]
     remarks_values = [clean_text(v) for v in df.get("remarks", pd.Series(dtype=object)).tolist()]
     remarks_values = [v for v in remarks_values if v]
-    email_values = [clean_text(v) for v in df.get("email", pd.Series(dtype=object)).tolist()]
-    email_values = [v for v in email_values if v]
     phone_values = [clean_text(v) for v in df.get("phone", pd.Series(dtype=object)).tolist()]
     phone_values = [v for v in phone_values if v]
     phones_to_recalc: set[str] = set(phone_values)
@@ -1939,7 +1940,6 @@ def merge_customer_records(conn, customer_ids) -> bool:
     base_address = clean_text(base_row.get("address")) or (address_values[0] if address_values else None)
     base_delivery_address = clean_text(base_row.get("delivery_address")) or (delivery_values[0] if delivery_values else None)
     combined_remarks = dedupe_join(remarks_values)
-    base_email = clean_text(base_row.get("email")) or (email_values[0] if email_values else None)
     base_phone = clean_text(base_row.get("phone")) or (phone_values[0] if phone_values else None)
 
     do_codes = []
@@ -1980,14 +1980,13 @@ def merge_customer_records(conn, customer_ids) -> bool:
     conn.execute(
         """
         UPDATE customers
-        SET name=?, company_name=?, phone=?, email=?, address=?, delivery_address=?, remarks=?, purchase_date=?, product_info=?, delivery_order_code=?, sales_person=?, dup_flag=0
+        SET name=?, company_name=?, phone=?, address=?, delivery_address=?, remarks=?, purchase_date=?, product_info=?, delivery_order_code=?, sales_person=?, dup_flag=0
         WHERE customer_id=?
         """,
         (
             base_name,
             base_company,
             base_phone,
-            base_email,
             base_address,
             base_delivery_address,
             clean_text(combined_remarks),
@@ -2148,7 +2147,6 @@ def _build_customers_export(conn) -> pd.DataFrame:
         SELECT c.customer_id,
                c.name,
                c.phone,
-               c.email,
                c.address,
                c.amount_spent,
                c.purchase_date,
@@ -2170,7 +2168,6 @@ def _build_customers_export(conn) -> pd.DataFrame:
             "customer_id": "Customer ID",
             "name": "Customer",
             "phone": "Phone",
-            "email": "Email",
             "address": "Address",
             "amount_spent": "Amount spent",
             "purchase_date": "Purchase date",
@@ -2667,8 +2664,8 @@ def recalc_customer_duplicate_flag(conn, phone):
 
 
 def init_ui():
-    st.set_page_config(page_title="PS Mini CRM", page_icon="🧰", layout="wide")
-    st.title("PS Engineering – Mini CRM")
+    st.set_page_config(page_title="PS Business Suites", page_icon="🧰", layout="wide")
+    st.title("PS Engineering – Business Suites")
     st.caption("Customers • Warranties • Needs • Summaries")
     st.markdown(
         """
@@ -4070,7 +4067,6 @@ def customers_page(conn):
          OR c.name LIKE '%'||?||'%'
          OR c.company_name LIKE '%'||?||'%'
          OR c.phone LIKE '%'||?||'%'
-         OR c.email LIKE '%'||?||'%'
          OR c.address LIKE '%'||?||'%'
          OR c.delivery_address LIKE '%'||?||'%'
          OR c.remarks LIKE '%'||?||'%'
@@ -4080,7 +4076,7 @@ def customers_page(conn):
         """
     ).strip()
     where_parts = [search_clause]
-    params: list[object] = [q, q, q, q, q, q, q, q, q, q, q]
+    params: list[object] = [q, q, q, q, q, q, q, q, q, q]
     if scope_clause:
         where_parts.append(scope_clause)
         params.extend(scope_params)
@@ -4093,7 +4089,6 @@ def customers_page(conn):
             c.name,
             c.company_name,
             c.phone,
-            c.email,
             c.address,
             c.delivery_address,
             c.remarks,
@@ -4433,7 +4428,6 @@ def customers_page(conn):
                     value=clean_text(selected_raw.get("company_name")) or "",
                 )
                 phone_edit = st.text_input("Phone", value=clean_text(selected_raw.get("phone")) or "")
-                email_edit = st.text_input("Email", value=clean_text(selected_raw.get("email")) or "")
                 address_edit = st.text_area(
                     "Billing address",
                     value=clean_text(selected_raw.get("address")) or "",
@@ -4467,7 +4461,6 @@ def customers_page(conn):
                 new_name = clean_text(name_edit)
                 new_company = clean_text(company_edit)
                 new_phone = clean_text(phone_edit)
-                new_email = clean_text(email_edit)
                 new_address = clean_text(address_edit)
                 new_delivery_address = clean_text(delivery_address_edit)
                 new_remarks = clean_text(remarks_edit)
@@ -4495,12 +4488,11 @@ def customers_page(conn):
                                     except Exception:
                                         pass
                 conn.execute(
-                    "UPDATE customers SET name=?, company_name=?, phone=?, email=?, address=?, delivery_address=?, remarks=?, purchase_date=?, product_info=?, delivery_order_code=?, sales_person=?, attachment_path=?, dup_flag=0 WHERE customer_id=?",
+                    "UPDATE customers SET name=?, company_name=?, phone=?, address=?, delivery_address=?, remarks=?, purchase_date=?, product_info=?, delivery_order_code=?, sales_person=?, attachment_path=?, dup_flag=0 WHERE customer_id=?",
                     (
                         new_name,
                         new_company,
                         new_phone,
-                        new_email,
                         new_address,
                         new_delivery_address,
                         new_remarks,
@@ -4737,7 +4729,6 @@ def customers_page(conn):
             c.name,
             c.company_name,
             c.phone,
-            c.email,
             c.address,
             c.delivery_address,
             c.remarks,
@@ -5605,7 +5596,7 @@ def _render_quotation_section():
             )
         with customer_cols[1]:
             customer_contact = st.text_input(
-                "Customer contact (phone / email)",
+                "Customer contact (phone)",
                 key="quotation_customer_contact",
             )
         customer_address = st.text_area(
@@ -6939,7 +6930,7 @@ def scraps_page(conn):
     scraps = df_query(
         conn,
         f"""
-        SELECT customer_id as id, name, phone, email, address, remarks, purchase_date, product_info, delivery_order_code, created_at
+        SELECT customer_id as id, name, phone, address, remarks, purchase_date, product_info, delivery_order_code, created_at
         FROM customers
         WHERE {where_sql}
         ORDER BY datetime(created_at) DESC
@@ -6960,7 +6951,7 @@ def scraps_page(conn):
         return ", ".join(missing)
 
     scraps = scraps.assign(missing=scraps.apply(missing_fields, axis=1))
-    display_cols = ["name", "phone", "email", "address", "remarks", "purchase_date", "product_info", "delivery_order_code", "missing", "created_at"]
+    display_cols = ["name", "phone", "address", "remarks", "purchase_date", "product_info", "delivery_order_code", "missing", "created_at"]
     st.dataframe(scraps[display_cols])
 
     st.markdown("### Update scrap record")
@@ -6988,7 +6979,6 @@ def scraps_page(conn):
     with st.form("scrap_update_form"):
         name = st.text_input("Name", existing_value("name"))
         phone = st.text_input("Phone", existing_value("phone"))
-        email = st.text_input("Email", existing_value("email"))
         address = st.text_area("Address", existing_value("address"))
         purchase = st.text_input("Purchase date (DD-MM-YYYY)", existing_value("purchase_date"))
         product = st.text_input("Product", existing_value("product_info"))
@@ -7001,7 +6991,6 @@ def scraps_page(conn):
     if save:
         new_name = clean_text(name)
         new_phone = clean_text(phone)
-        new_email = clean_text(email)
         new_address = clean_text(address)
         new_remarks = clean_text(remarks_text)
         purchase_str, _ = date_strings_from_input(purchase)
@@ -7009,11 +6998,10 @@ def scraps_page(conn):
         new_do = clean_text(do_code)
         old_phone = clean_text(selected.get("phone"))
         conn.execute(
-            "UPDATE customers SET name=?, phone=?, email=?, address=?, remarks=?, purchase_date=?, product_info=?, delivery_order_code=?, dup_flag=0 WHERE customer_id=?",
+            "UPDATE customers SET name=?, phone=?, address=?, remarks=?, purchase_date=?, product_info=?, delivery_order_code=?, dup_flag=0 WHERE customer_id=?",
             (
                 new_name,
                 new_phone,
-                new_email,
                 new_address,
                 new_remarks,
                 purchase_str,
@@ -7151,7 +7139,6 @@ HEADER_MAP = {
     "customer_name": {"customer_name", "customer", "company", "company_name", "client", "party", "name"},
     "address": {"address", "addr", "street", "location"},
     "phone": {"phone", "mobile", "contact", "contact_no", "phone_no", "phone_number", "cell", "whatsapp"},
-    "email": {"email", "mail", "e_mail", "email_address", "contact_email"},
     "product": {"product", "item", "generator", "model", "description"},
     "do_code": {"do_code", "delivery_order", "delivery_order_code", "delivery_order_no", "do", "d_o_code", "do_number"},
     "remarks": {"remarks", "remark", "notes", "note", "comments", "comment"},
@@ -7259,7 +7246,7 @@ def import_page(conn):
     col1, col2, col3 = st.columns(3)
     col4, col5 = st.columns(2)
     col6, col7 = st.columns(2)
-    col8, _ = st.columns(2)
+    col8, col9 = st.columns(2)
     sel_date = col1.selectbox(
         "Date", options=opts, index=(guess["date"] + 1) if guess.get("date") is not None else 0
     )
@@ -7276,12 +7263,15 @@ def import_page(conn):
         "Product", options=opts, index=(guess["product"] + 1) if guess.get("product") is not None else 0
     )
     sel_do = col6.selectbox(
-        "Delivery order code", options=opts, index=(guess["do_code"] + 1) if guess.get("do_code") is not None else 0
+        "Delivery order", options=opts, index=(guess["do_code"] + 1) if guess.get("do_code") is not None else 0
     )
-    sel_remarks = col7.selectbox(
+    sel_do_code = col7.selectbox(
+        "DO Code (optional)", options=opts, index=0
+    )
+    sel_remarks = col8.selectbox(
         "Remarks", options=opts, index=(guess.get("remarks", None) + 1) if guess.get("remarks") is not None else 0
     )
-    sel_amount = col8.selectbox(
+    sel_amount = col9.selectbox(
         "Amount spent", options=opts, index=(guess.get("amount_spent", None) + 1) if guess.get("amount_spent") is not None else 0
     )
 
@@ -7296,10 +7286,13 @@ def import_page(conn):
             "phone": pick(sel_phone),
             "product": pick(sel_prod),
             "do_code": pick(sel_do),
+            "do_code_alt": pick(sel_do_code),
             "remarks": pick(sel_remarks),
             "amount_spent": pick(sel_amount),
         }
     )
+    df_norm["do_code"] = df_norm["do_code_alt"].combine_first(df_norm["do_code"])
+    df_norm.drop(columns=["do_code_alt"], inplace=True, errors="ignore")
     skip_blanks = st.checkbox("Skip blank rows", value=True)
     df_norm = refine_multiline(df_norm)
     df_norm["date"] = coerce_excel_date(df_norm["date"])
@@ -7480,7 +7473,6 @@ def duplicates_page(conn):
             c.customer_id as id,
             c.name,
             c.phone,
-            c.email,
             c.address,
             c.purchase_date,
             c.product_info,
@@ -7529,7 +7521,6 @@ def duplicates_page(conn):
                 "__group_key",
                 "name",
                 "phone",
-                "email",
                 "address",
                 "purchase_date_fmt",
                 "product_info",
@@ -7585,7 +7576,6 @@ def duplicates_page(conn):
                     "id",
                     "name",
                     "phone",
-                    "email",
                     "address",
                     "purchase_date",
                     "product_info",
@@ -7607,7 +7597,6 @@ def duplicates_page(conn):
                     "id": st.column_config.Column("ID", disabled=True),
                     "name": st.column_config.TextColumn("Name"),
                     "phone": st.column_config.TextColumn("Phone"),
-                    "email": st.column_config.TextColumn("Email"),
                     "address": st.column_config.TextColumn("Address"),
                     "purchase_date": st.column_config.DateColumn("Purchase date", format="DD-MM-YYYY", required=False),
                     "product_info": st.column_config.TextColumn("Product"),
@@ -7645,7 +7634,6 @@ def duplicates_page(conn):
                             continue
                         new_name = clean_text(row.get("name"))
                         new_phone = clean_text(row.get("phone"))
-                        new_email = clean_text(row.get("email"))
                         new_address = clean_text(row.get("address"))
                         purchase_str, _ = date_strings_from_input(row.get("purchase_date"))
                         product_label = clean_text(row.get("product_info"))
@@ -7653,7 +7641,6 @@ def duplicates_page(conn):
                         original_row = raw_map[cid]
                         old_name = clean_text(original_row.get("name"))
                         old_phone = clean_text(original_row.get("phone"))
-                        old_email = clean_text(original_row.get("email"))
                         old_address = clean_text(original_row.get("address"))
                         old_purchase = clean_text(original_row.get("purchase_date"))
                         old_product = clean_text(original_row.get("product_info"))
@@ -7661,7 +7648,6 @@ def duplicates_page(conn):
                         if (
                             new_name == old_name
                             and new_phone == old_phone
-                            and new_email == old_email
                             and new_address == old_address
                             and purchase_str == old_purchase
                             and product_label == old_product
@@ -7669,11 +7655,10 @@ def duplicates_page(conn):
                         ):
                             continue
                         conn.execute(
-                            "UPDATE customers SET name=?, phone=?, email=?, address=?, purchase_date=?, product_info=?, delivery_order_code=?, dup_flag=0 WHERE customer_id=?",
+                            "UPDATE customers SET name=?, phone=?, address=?, purchase_date=?, product_info=?, delivery_order_code=?, dup_flag=0 WHERE customer_id=?",
                             (
                                 new_name,
                                 new_phone,
-                                new_email,
                                 new_address,
                                 purchase_str,
                                 product_label,
@@ -7814,7 +7799,6 @@ def _import_clean6(conn, df, tag="Import"):
         cust = clean_text(r.get("customer_name"))
         addr = clean_text(r.get("address"))
         phone = clean_text(r.get("phone"))
-        email = clean_text(r.get("email"))
         product_label = clean_text(r.get("product"))
         do_serial = clean_text(r.get("do_code"))
         remarks_val = clean_text(r.get("remarks"))
@@ -7847,8 +7831,8 @@ def _import_clean6(conn, df, tag="Import"):
 
         dupc = 1 if exists_phone(phone, purchase_str, do_serial, product_label) else 0
         cur.execute(
-            "INSERT INTO customers (name, phone, email, address, remarks, amount_spent, created_by, dup_flag) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (cust, phone, email, addr, remarks_val, amount_value, created_by, dupc),
+            "INSERT INTO customers (name, phone, address, remarks, amount_spent, created_by, dup_flag) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (cust, phone, addr, remarks_val, amount_value, created_by, dupc),
         )
         cid = cur.lastrowid
         if dupc:

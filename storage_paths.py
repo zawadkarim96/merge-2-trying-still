@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 
-APP_STORAGE_SUBDIR = "ps-mini-crm"
+APP_STORAGE_SUBDIR = "ps-business-suites"
 
 
 def get_storage_dir() -> Path:

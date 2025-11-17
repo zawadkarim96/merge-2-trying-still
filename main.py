@@ -1,8 +1,8 @@
 """Unified Streamlit entry point for both applications.
 
 Set the ``PS_APP`` environment variable to choose which experience to
-start when deploying (``crm`` for PS Mini CRM, ``sales`` for PS Sales
-Manager). When unset, the CRM experience is launched for backwards
+start when deploying (``crm`` for the Business Suites CRM, ``sales`` for
+PS Sales Manager). When unset, the CRM experience is launched for backwards
 compatibility.
 """
 from __future__ import annotations

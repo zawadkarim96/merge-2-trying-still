@@ -13,12 +13,12 @@ def test_admin_user_seeded(db_conn, app_module):
 def test_customer_creation_and_duplicate_flag(db_conn, app_module):
     cur = db_conn.cursor()
     cur.execute(
-        "INSERT INTO customers (name, phone, email, address, dup_flag) VALUES (?, ?, ?, ?, 0)",
-        ("Alice", "555-0000", "alice@example.com", "123 Road"),
+        "INSERT INTO customers (name, phone, address, dup_flag) VALUES (?, ?, ?, 0)",
+        ("Alice", "555-0000", "123 Road"),
     )
     cur.execute(
-        "INSERT INTO customers (name, phone, email, address, dup_flag) VALUES (?, ?, ?, ?, 0)",
-        ("Bob", "555-0000", "bob@example.com", "456 Lane"),
+        "INSERT INTO customers (name, phone, address, dup_flag) VALUES (?, ?, ?, 0)",
+        ("Bob", "555-0000", "456 Lane"),
     )
     db_conn.commit()
 
@@ -83,8 +83,8 @@ def test_merge_customer_records_combines_data_and_recalculates_duplicates(db_con
 def test_scrap_record_completion_moves_out_of_scraps(db_conn, app_module):
     cur = db_conn.cursor()
     cur.execute(
-        "INSERT INTO customers (name, phone, email, address, dup_flag) VALUES (?, ?, ?, ?, 0)",
-        ("Scrappy", None, None, ""),
+        "INSERT INTO customers (name, phone, address, dup_flag) VALUES (?, ?, ?, 0)",
+        ("Scrappy", None, ""),
     )
     scrap_id = cur.lastrowid
     db_conn.commit()
@@ -145,8 +145,8 @@ def test_streamlit_flag_options_from_env_handles_invalid_port(monkeypatch, app_m
 def test_export_database_to_excel_has_curated_sheets(db_conn, app_module):
     cur = db_conn.cursor()
     cur.execute(
-        "INSERT INTO customers (name, phone, email, address, dup_flag) VALUES (?, ?, ?, ?, 0)",
-        ("Charlie", "123", "charlie@example.com", "42 Test Way"),
+        "INSERT INTO customers (name, phone, address, dup_flag) VALUES (?, ?, ?, 0)",
+        ("Charlie", "123", "42 Test Way"),
     )
     customer_id = cur.lastrowid
     cur.execute(
