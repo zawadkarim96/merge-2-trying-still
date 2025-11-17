@@ -2671,10 +2671,16 @@ def init_ui():
         """
         <style>
         [data-testid="stMetric"] {
-            background: #f5f9ff;
+            background: rgba(255, 255, 255, 0.04);
             border-radius: 0.8rem;
             padding: 0.85rem;
-            border: 1px solid rgba(49, 51, 63, 0.08);
+            border: 1px solid rgba(250, 250, 250, 0.12);
+        }
+        @media (prefers-color-scheme: light) {
+            [data-testid="stMetric"] {
+                background: #f7f9fc;
+                border: 1px solid rgba(49, 51, 63, 0.08);
+            }
         }
         div[data-testid="stPopover"] > button {
             border: none !important;
@@ -2743,6 +2749,16 @@ def dashboard(conn):
     header_cols = st.columns((0.85, 0.15))
     with header_cols[1]:
         render_notification_bell(conn)
+    quick_links = st.columns(3)
+    if quick_links[0].button("Work done", key="dashboard_work_done_link"):
+        st.session_state.page = "Work done"
+        _safe_rerun()
+    if quick_links[1].button("Delivery orders", key="dashboard_delivery_orders_link"):
+        st.session_state.page = "Delivery Orders"
+        _safe_rerun()
+    if quick_links[2].button("Create quotation", key="dashboard_create_quotation_link"):
+        st.session_state.page = "Create Quotation"
+        _safe_rerun()
     user = st.session_state.user or {}
     is_admin = user.get("role") == "admin"
     allowed_customers = accessible_customer_ids(conn)
@@ -6452,12 +6468,221 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
         st.info("No maintenance records yet. Log one using the form above.")
 
 
+def delivery_orders_page(conn):
+    st.subheader("🚚 Delivery orders")
+
+    customer_options, customer_labels, _, _ = fetch_customer_choices(conn)
+    st.markdown("### Create or update a delivery order")
+    with st.form("delivery_order_form"):
+        do_number = st.text_input("Delivery order number *")
+        selected_customer = st.selectbox(
+            "Customer", customer_options, format_func=lambda cid: customer_labels.get(cid, "-- Select customer --")
+        )
+        description = st.text_area("Description / items")
+        sales_person = st.text_input("Sales person / owner")
+        remarks = st.text_area("Remarks")
+        do_file = st.file_uploader(
+            "Attach delivery order (PDF)",
+            type=["pdf"],
+            help="Optional supporting document stored alongside the record.",
+        )
+        submit = st.form_submit_button("Save delivery order", type="primary")
+
+    if submit:
+        cleaned_number = clean_text(do_number)
+        if not cleaned_number:
+            st.error("Delivery order number is required.")
+        else:
+            cur = conn.cursor()
+            existing = df_query(
+                conn,
+                "SELECT file_path FROM delivery_orders WHERE do_number = ?",
+                (cleaned_number,),
+            )
+            stored_path = None
+            if not existing.empty:
+                stored_path = clean_text(existing.iloc[0].get("file_path"))
+            if do_file is not None:
+                stored_path = store_uploaded_pdf(
+                    do_file,
+                    DELIVERY_ORDER_DIR,
+                    filename=f"do_{_sanitize_path_component(cleaned_number)}.pdf",
+                )
+            if existing.empty:
+                cur.execute(
+                    """
+                    INSERT INTO delivery_orders (do_number, customer_id, description, sales_person, remarks, file_path)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        cleaned_number,
+                        int(selected_customer) if selected_customer else None,
+                        clean_text(description),
+                        clean_text(sales_person),
+                        clean_text(remarks),
+                        stored_path,
+                    ),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE delivery_orders
+                       SET customer_id=?, description=?, sales_person=?, remarks=?, file_path=?
+                     WHERE do_number=?
+                    """,
+                    (
+                        int(selected_customer) if selected_customer else None,
+                        clean_text(description),
+                        clean_text(sales_person),
+                        clean_text(remarks),
+                        stored_path,
+                        cleaned_number,
+                    ),
+                )
+            if selected_customer:
+                link_delivery_order_to_customer(conn, cleaned_number, int(selected_customer))
+            conn.commit()
+            st.success(f"Delivery order {cleaned_number} saved successfully.")
+
+    st.markdown("### Delivery order search")
+    filter_cols = st.columns((1.2, 1, 1, 1))
+    with filter_cols[0]:
+        query_text = st.text_input(
+            "Search by DO number, description or remarks", key="do_filter_text"
+        )
+    with filter_cols[1]:
+        customer_filter = st.selectbox(
+            "Filter by customer",
+            options=[None] + [opt for opt in customer_options if opt is not None],
+            format_func=lambda cid: customer_labels.get(cid, "(any)"),
+            key="do_filter_customer",
+        )
+    with filter_cols[2]:
+        sales_filter = st.text_input("Sales person filter", key="do_filter_sales")
+    with filter_cols[3]:
+        use_date_filter = st.checkbox("Filter by created date", key="do_filter_date_toggle")
+    date_range = None
+    if use_date_filter:
+        date_range = st.date_input(
+            "Created between",
+            value=(datetime.now().date() - timedelta(days=30), datetime.now().date()),
+            key="do_filter_date_range",
+        )
+
+    do_df = df_query(
+        conn,
+        """
+        SELECT d.do_number,
+               d.customer_id,
+               COALESCE(c.name, '(unknown)') AS customer,
+               d.description,
+               d.sales_person,
+               d.remarks,
+               d.created_at,
+               d.file_path
+          FROM delivery_orders d
+          LEFT JOIN customers c ON c.customer_id = d.customer_id
+         ORDER BY datetime(d.created_at) DESC
+        """,
+    )
+    allowed_customers = accessible_customer_ids(conn)
+    if allowed_customers is not None:
+        do_df = do_df[
+            do_df["customer_id"].apply(
+                lambda value: int(value) in allowed_customers if pd.notna(value) else False
+            )
+        ]
+    if not do_df.empty:
+        do_df = fmt_dates(do_df, ["created_at"])
+        if query_text:
+            needle = query_text.lower()
+            do_df = do_df[
+                do_df.apply(
+                    lambda row: any(
+                        needle in str(row.get(col, "")).lower()
+                        for col in ["do_number", "description", "remarks"]
+                    ),
+                    axis=1,
+                )
+            ]
+        if customer_filter:
+            do_df = do_df[do_df["customer_id"] == int(customer_filter)]
+        if sales_filter:
+            sales_needle = sales_filter.lower()
+            do_df = do_df[
+                do_df["sales_person"].apply(
+                    lambda value: sales_needle in str(value).lower() if pd.notna(value) else False
+                )
+            ]
+        if use_date_filter and isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+            start_date, end_date = date_range
+            start_iso = to_iso_date(start_date)
+            end_iso = to_iso_date(end_date)
+            if start_iso and end_iso:
+                do_df = do_df[
+                    do_df["created_at"].apply(
+                        lambda value: start_iso <= to_iso_date(value) <= end_iso if to_iso_date(value) else False
+                    )
+                ]
+        do_df["Document"] = do_df["file_path"].apply(lambda fp: "📎" if clean_text(fp) else "")
+
+    st.dataframe(
+        do_df.rename(
+            columns={
+                "do_number": "DO number",
+                "customer": "Customer",
+                "description": "Description",
+                "sales_person": "Sales person",
+                "remarks": "Remarks",
+                "created_at": "Created",
+                "Document": "Attachment",
+            }
+        ).drop(columns=["customer_id", "file_path"], errors="ignore"),
+        use_container_width=True,
+    )
+
+    downloads = {}
+    if not do_df.empty:
+        downloads = {
+            clean_text(row["do_number"]): clean_text(row["file_path"])
+            for _, row in do_df.iterrows()
+            if clean_text(row.get("file_path"))
+        }
+    if downloads:
+        st.markdown("#### Download delivery order")
+        selected_download = st.selectbox(
+            "Pick a delivery order", list(downloads.keys()), key="do_download_select"
+        )
+        path_value = downloads.get(selected_download)
+        file_path = resolve_upload_path(path_value)
+        if file_path and file_path.exists():
+            st.download_button(
+                f"Download {selected_download}",
+                data=file_path.read_bytes(),
+                file_name=file_path.name,
+                key="do_download_button",
+            )
+        else:
+            st.info("The selected delivery order file could not be found.")
+    elif st.session_state.get("do_filter_text") or query_text:
+        st.caption("No matching delivery orders found for the applied filters.")
+
+
+def quotation_page(conn):
+    st.subheader("🧾 Create quotation")
+    _render_quotation_section()
+
+
+def work_done_page(conn):
+    reports_page(conn)
+
+
 def service_maintenance_page(conn):
     st.subheader("🛠️ Maintenance and Service")
     st.markdown("### Service records")
     _render_service_section(conn, show_heading=False)
     st.markdown("---")
-    st.info("Quotation creation is temporarily unavailable.")
+    st.info("Create new quotations from the dedicated 'Create Quotation' page in the sidebar.")
 
 
 def customer_summary_page(conn):
@@ -9231,6 +9456,9 @@ def main():
         if role == "admin":
             pages = [
                 "Dashboard",
+                "Work done",
+                "Delivery Orders",
+                "Create Quotation",
                 "Customers",
                 "Customer Summary",
                 "Scraps",
@@ -9244,6 +9472,9 @@ def main():
         else:
             pages = [
                 "Dashboard",
+                "Work done",
+                "Delivery Orders",
+                "Create Quotation",
                 "Customers",
                 "Customer Summary",
                 "Warranties",
@@ -9261,6 +9492,12 @@ def main():
 
     if page == "Dashboard":
         dashboard(conn)
+    elif page == "Work done":
+        work_done_page(conn)
+    elif page == "Delivery Orders":
+        delivery_orders_page(conn)
+    elif page == "Create Quotation":
+        quotation_page(conn)
     elif page == "Customers":
         customers_page(conn)
     elif page == "Customer Summary":
