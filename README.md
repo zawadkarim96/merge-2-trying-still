@@ -1,4 +1,4 @@
-# PS Mini CRM
+# PS Business Suites
 
 ## Release Notes
 - v7.4: Fixed syntax and navigation chain. Dashboard shows only upcoming warranties (3 & 60 days). Removed Products/Orders pages, kept tables for import integrity. Customers page supports Needs (product/unit). DD-MM-YYYY display, flexible importer + Excel serial dates. Login safe rerun for all Streamlit versions.
@@ -14,11 +14,11 @@ These launchers create a dedicated virtual environment, install dependencies fro
 To launch the PS Business Suites by ZAD sales experience instead of the service CRM, set `PS_APP=sales` (or `PS_APP_SCRIPT=sales_app.py` when using the desktop launcher) before starting the application. The same unified requirements file and Procfile work for both apps on Render or Railway.
 
 ### Any Platform (single command or double-click)
-Run `python run_app.py` from the repository root, or double-click the file in your file explorer. The script prepares the environment and launches the app inside a pywebview dialog titled **PS Service Software**.
+Run `python run_app.py` from the repository root, or double-click the file in your file explorer. The script prepares the environment and launches the app inside a pywebview dialog titled **PS Business Suites**.
 
 ### Windows
 1. Double-click `run_app.bat`.
-2. Wait for the first run to finish creating the virtual environment and installing dependencies. A desktop window titled **PS Service Software** will open automatically.
+2. Wait for the first run to finish creating the virtual environment and installing dependencies. A desktop window titled **PS Business Suites** will open automatically.
 3. Subsequent launches skip the setup step—the cached environment is reused so the window opens right away.
 
 ### macOS & Linux
@@ -34,11 +34,11 @@ If your staff does not have Python installed, you can package the project into a
 3. Share the contents of `dist/PS Service Software/` with your staff. Windows users can double-click `PS Service Software.exe` (complete with the PS Service Software icon); macOS and Linux users can run the executable from Finder/File Explorer or the terminal.
 
 ### Where user data lives
-Regardless of whether you launch from source, the packaged desktop app, or `streamlit run app.py`, databases, uploads, and the Excel import template are stored in a writable folder per operating system:
+Regardless of whether you launch from source, the packaged desktop app, or `streamlit run main.py`, databases, uploads, and the Excel import template are stored in a writable folder per operating system:
 
-- **Windows:** `%APPDATA%\ps-mini-crm`
-- **macOS:** `~/Library/Application Support/ps-mini-crm`
-- **Linux:** `${XDG_DATA_HOME:-~/.local/share}/ps-mini-crm`
+- **Windows:** `%APPDATA%\ps-business-suites`
+- **macOS:** `~/Library/Application Support/ps-business-suites`
+- **Linux:** `${XDG_DATA_HOME:-~/.local/share}/ps-business-suites`
 
 Staff can back up or migrate the application by copying that folder. Deleting it resets the app to a clean state the next time the executable is opened.
 

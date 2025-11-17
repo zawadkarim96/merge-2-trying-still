@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Desktop-friendly launcher for the PS Service Software Streamlit application.
+"""Desktop-friendly launcher for the PS Business Suites Streamlit application.
 
 This module powers the "double-click" experience for staff members. It is used
 both when the project is executed directly from source (``python
@@ -14,7 +14,7 @@ desktop_launcher.py``) and when a PyInstaller bundle produced by
   the login page appears like a traditional desktop dialog.
 
 Users who prefer the browser experience can continue to rely on
-``streamlit run app.py``.
+``streamlit run main.py``.
 """
 
 from __future__ import annotations
@@ -41,11 +41,11 @@ except ImportError as exc:  # pragma: no cover - dependency should be present
     ) from exc
 
 
-APP_SCRIPT_NAME = os.getenv("PS_APP_SCRIPT", "app.py")
+APP_SCRIPT_NAME = os.getenv("PS_APP_SCRIPT", "main.py")
 IMPORT_TEMPLATE_NAME = "import_template.xlsx"
 HOST_ADDRESS = "127.0.0.1"
 SERVER_STARTUP_TIMEOUT = 30.0  # seconds
-WINDOW_TITLE = "PS Service Software"
+WINDOW_TITLE = "PS Business Suites"
 
 
 def resource_path(relative_name: str) -> Path:
