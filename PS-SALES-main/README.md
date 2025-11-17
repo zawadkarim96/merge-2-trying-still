@@ -1,6 +1,6 @@
-# PS Sales Manager
+# PS Business Suites by ZAD
 
-PS Sales Manager is a Streamlit application for managing quotations, work orders,
+PS Business Suites by ZAD is a Streamlit application for managing quotations, work orders,
 delivery orders and follow-up notifications for sales teams. The tool focuses on
 sales workflows (from quotation to payment collection) while adopting the
 structure and best practices of the PS Service Software project.

@@ -1,4 +1,4 @@
-"""Shared utilities for the PS Sales Manager Streamlit app.
+"""Shared utilities for the PS Business Suites by ZAD Streamlit app.
 
 This module consolidates configuration, database helpers and security
 services that were previously kept in a separate repository. Keeping
