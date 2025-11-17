@@ -3167,6 +3167,20 @@ def render_dashboard(user: Dict) -> None:
         if st.button("Create quotation", type="primary", use_container_width=True):
             st.session_state["active_page"] = "quotation_letters"
             rerun()
+    action_cols = st.columns(4)
+    if action_cols[0].button("Create quotation", use_container_width=True):
+        st.session_state["active_page"] = "quotation_letters"
+        rerun()
+    if action_cols[1].button("Work orders", use_container_width=True):
+        st.session_state["active_page"] = "work_orders"
+        rerun()
+    if action_cols[2].button("Delivery orders", use_container_width=True):
+        st.session_state["active_page"] = "delivery_orders"
+        rerun()
+    advanced_label = "Advanced filters" if user["role"] == "admin" else "Advanced filters (admin only)"
+    if action_cols[3].button(advanced_label, use_container_width=True, disabled=user["role"] != "admin"):
+        st.session_state["active_page"] = "admin_filters"
+        rerun()
     if user["role"] == "admin" and not notifications_df.empty:
         seen_ids = set(st.session_state.get("_seen_notification_ids", []))
         new_rows = notifications_df[
@@ -3216,6 +3230,11 @@ def render_dashboard(user: Dict) -> None:
     )
     metric_cols[2].metric("Overdue follow-ups", len(overdue))
     metric_cols[3].metric("Outstanding payments", f"${outstanding_total:,.2f}")
+
+    if counts.get("total", 0) == 0:
+        st.info(
+            "No quotations recorded yet. Use the Create quotation button above to get started."
+        )
 
     letters_df = list_quotation_letters(user)
     st.subheader("Quotation letter follow-ups")
