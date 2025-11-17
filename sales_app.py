@@ -99,7 +99,7 @@ LETTER_TEMPLATE_LIBRARY: Tuple[Dict[str, Any], ...] = (
             "salutation": "Dear {customer_salutation},",
             "body_intro": textwrap.dedent(
                 """\
-                Thank you for inviting PS Sales Manager to submit our quotation for {customer_company}.\n"
+                Thank you for inviting PS Business Suites by ZAD to submit our quotation for {customer_company}.\n"
                 "We appreciate the opportunity to support your team and have summarised the deliverables below for your review."
                 """
             ).strip(),
@@ -179,7 +179,7 @@ LETTER_TEMPLATE_LIBRARY: Tuple[Dict[str, Any], ...] = (
             "salutation": "Dear {customer_salutation},",
             "body_intro": textwrap.dedent(
                 """\
-                As discussed, the PS Sales Manager project team has prepared a turnkey implementation package\n"
+                As discussed, the PS Business Suites by ZAD project team has prepared a turnkey implementation package\n"
                 "covering the full project lifecycle for {customer_company}. The proposal highlights the milestones below."
                 """
             ).strip(),
@@ -1308,7 +1308,7 @@ def sync_letter_tracking(letter_id: int, data: Dict[str, Any]) -> Tuple[int, Opt
     return quotation_id, previous_status
 
 
-st.set_page_config(page_title="PS Sales Manager", page_icon="📊", layout="wide")
+st.set_page_config(page_title="PS Business Suites by ZAD", page_icon="📊", layout="wide")
 
 
 def rerun() -> None:
@@ -2345,7 +2345,7 @@ def authenticate(username: str, password: str) -> Tuple[Optional[Dict], Optional
 
 
 def login_screen() -> None:
-    st.title("PS Sales Manager")
+    st.title("PS Business Suites by ZAD")
     st.caption("Quotation and sales workflow management")
     with st.form("login_form"):
         cols = st.columns(2)
@@ -3157,11 +3157,17 @@ def admin_salesperson_overview() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFra
 def render_dashboard(user: Dict) -> None:
     generate_system_notifications()
     notifications_df = get_user_notifications(user["user_id"], include_read=False)
-    st.header("Revenue & Follow-up Dashboard")
-    st.markdown(
-        "<div style='text-align:right;font-size:0.75rem;opacity:0.7;'>by ZAD</div>",
-        unsafe_allow_html=True,
-    )
+    header_cols = st.columns([3, 1])
+    with header_cols[0]:
+        st.header("Revenue & Follow-up Dashboard")
+        st.markdown(
+            "<div style='text-align:right;font-size:0.75rem;opacity:0.7;'>by ZAD</div>",
+            unsafe_allow_html=True,
+        )
+    with header_cols[1]:
+        if st.button("Create quotation", type="primary", use_container_width=True):
+            st.session_state["active_page"] = "quotation_letters"
+            rerun()
     if user["role"] == "admin" and not notifications_df.empty:
         seen_ids = set(st.session_state.get("_seen_notification_ids", []))
         new_rows = notifications_df[
@@ -5667,7 +5673,7 @@ def render_settings() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="PS Sales Manager", layout="wide")
+    st.set_page_config(page_title="PS Business Suites by ZAD", layout="wide")
     if "user" not in st.session_state:
         login_screen()
         return
