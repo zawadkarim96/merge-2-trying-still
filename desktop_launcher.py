@@ -41,7 +41,7 @@ except ImportError as exc:  # pragma: no cover - dependency should be present
     ) from exc
 
 
-APP_SCRIPT_NAME = "app.py"
+APP_SCRIPT_NAME = os.getenv("PS_APP_SCRIPT", "app.py")
 IMPORT_TEMPLATE_NAME = "import_template.xlsx"
 HOST_ADDRESS = "127.0.0.1"
 SERVER_STARTUP_TIMEOUT = 30.0  # seconds

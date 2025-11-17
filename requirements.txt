@@ -1,4 +1,6 @@
-streamlit
-pandas
+streamlit>=1.32
+pandas>=1.5
 python-dotenv
 openpyxl
+xlsxwriter>=3.1
+reportlab>=3.6
