@@ -52,6 +52,7 @@ MAINTENANCE_DOCS_DIR = UPLOADS_DIR / "maintenance_documents"
 CUSTOMER_DOCS_DIR = UPLOADS_DIR / "customer_documents"
 SERVICE_BILL_DIR = UPLOADS_DIR / "service_bills"
 REPORT_DOCS_DIR = UPLOADS_DIR / "report_documents"
+QUOTATION_RECEIPT_DIR = UPLOADS_DIR / "quotation_receipts"
 
 DEFAULT_QUOTATION_VALID_DAYS = 30
 
@@ -570,6 +571,7 @@ CREATE TABLE IF NOT EXISTS quotations (
     total_amount REAL,
     discount_pct REAL,
     status TEXT DEFAULT 'pending',
+    payment_receipt_path TEXT,
     follow_up_status TEXT,
     follow_up_notes TEXT,
     follow_up_date TEXT,
@@ -658,6 +660,7 @@ def ensure_schema_upgrades(conn):
     add_column("services", "bill_amount", "REAL")
     add_column("services", "bill_document_path", "TEXT")
     add_column("maintenance_records", "status", "TEXT DEFAULT 'In progress'")
+    add_column("quotations", "payment_receipt_path", "TEXT")
     add_column("maintenance_records", "maintenance_start_date", "TEXT")
     add_column("maintenance_records", "maintenance_end_date", "TEXT")
     add_column("maintenance_records", "maintenance_product_info", "TEXT")
@@ -1387,8 +1390,8 @@ def normalize_quotation_items(
         if not description:
             continue
 
-        hsn = clean_text(entry.get("hsn"))
-        unit = clean_text(entry.get("unit"))
+        kva = clean_text(entry.get("kva"))
+        specs = clean_text(entry.get("specs"))
         quantity = max(_coerce_float(entry.get("quantity"), 0.0), 0.0)
         rate = max(_coerce_float(entry.get("rate"), 0.0), 0.0)
         discount_pct = _clamp_percentage(_coerce_float(entry.get("discount"), 0.0))
@@ -1407,8 +1410,8 @@ def normalize_quotation_items(
         item = {
             "Item": len(cleaned) + 1,
             "Description": description,
-            "HSN/SAC": hsn,
-            "Unit": unit,
+            "kVA": kva,
+            "Specs": specs,
             "Quantity": quantity,
             "Rate": rate,
             "Gross amount": gross_amount,
@@ -1644,8 +1647,8 @@ def _default_quotation_items() -> list[dict[str, object]]:
     return [
         {
             "description": "",
-            "hsn": "",
-            "unit": "",
+            "kva": "",
+            "specs": "",
             "quantity": 1.0,
             "rate": 0.0,
             "discount": 0.0,
@@ -1689,6 +1692,7 @@ def _reset_quotation_form_state() -> None:
         "quotation_admin_notes",
         "quotation_reminder_label",
         "quotation_customer_contact_name",
+        "quotation_receipt_upload",
     ]:
         st.session_state.pop(key, None)
     st.session_state.pop("quotation_result", None)
@@ -1732,18 +1736,36 @@ def ensure_upload_dirs():
         CUSTOMER_DOCS_DIR,
         SERVICE_BILL_DIR,
         REPORT_DOCS_DIR,
+        QUOTATION_RECEIPT_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)
 
 
-def save_uploaded_file(uploaded_file, target_dir: Path, filename: Optional[str] = None) -> Optional[Path]:
+def save_uploaded_file(
+    uploaded_file,
+    target_dir: Path,
+    filename: Optional[str] = None,
+    *,
+    allowed_extensions: Optional[set[str]] = None,
+    default_extension: str = ".pdf",
+) -> Optional[Path]:
     if uploaded_file is None:
         return None
     ensure_upload_dirs()
-    safe_name = filename or uploaded_file.name
-    safe_name = "".join(ch for ch in safe_name if ch.isalnum() or ch in (".", "_", "-"))
-    if not safe_name.lower().endswith(".pdf"):
-        safe_name = f"{safe_name}.pdf"
+    raw_name = filename or uploaded_file.name or "upload"
+    raw_name = "".join(ch for ch in raw_name if ch.isalnum() or ch in (".", "_", "-"))
+    stem = Path(raw_name).stem or "upload"
+    ext = Path(raw_name).suffix.lower()
+
+    if allowed_extensions:
+        normalized_allowed = {val.lower() for val in allowed_extensions}
+        if ext not in normalized_allowed:
+            ext = default_extension if default_extension.startswith(".") else f".{default_extension}"
+        safe_name = f"{stem}{ext}"
+    else:
+        if ext != ".pdf":
+            ext = default_extension if default_extension.startswith(".") else f".{default_extension}"
+        safe_name = f"{stem}{ext}"
     dest = target_dir / safe_name
     counter = 1
     while dest.exists():
@@ -1766,6 +1788,27 @@ def store_uploaded_pdf(uploaded_file, target_dir: Path, filename: Optional[str] 
     """
 
     saved_path = save_uploaded_file(uploaded_file, target_dir, filename=filename)
+    if not saved_path:
+        return None
+    try:
+        return str(saved_path.relative_to(BASE_DIR))
+    except ValueError:
+        return str(saved_path)
+
+
+def store_payment_receipt(uploaded_file, *, identifier: Optional[str] = None) -> Optional[str]:
+    """Persist an uploaded receipt (PDF or image) for paid quotations."""
+
+    if uploaded_file is None:
+        return None
+    filename = identifier or uploaded_file.name or "receipt"
+    saved_path = save_uploaded_file(
+        uploaded_file,
+        QUOTATION_RECEIPT_DIR,
+        filename=filename,
+        allowed_extensions={".pdf", ".png", ".jpg", ".jpeg", ".webp"},
+        default_extension=".pdf",
+    )
     if not saved_path:
         return None
     try:
@@ -2462,6 +2505,71 @@ def _build_maintenance_export(conn) -> pd.DataFrame:
     )
 
 
+def _build_quotations_export(conn) -> pd.DataFrame:
+    scope_clause, scope_params = _quotation_scope_filter()
+    query = dedent(
+        f"""
+        SELECT quotation_id,
+               reference,
+               quote_date,
+               customer_company,
+               customer_contact,
+               customer_address,
+               customer_district,
+               attention_name,
+               attention_title,
+               subject,
+               total_amount,
+               discount_pct,
+               status,
+               follow_up_status,
+               follow_up_notes,
+               follow_up_date,
+               reminder_label,
+               payment_receipt_path,
+               salesperson_name,
+               salesperson_title,
+               salesperson_contact,
+               remarks_internal,
+               created_at,
+               updated_at
+        FROM quotations
+        {scope_clause}
+        ORDER BY datetime(quote_date) DESC, quotation_id DESC
+        """
+    )
+    df = df_query(conn, query, scope_params)
+    df = fmt_dates(df, ["quote_date", "follow_up_date", "created_at", "updated_at"])
+    return df.rename(
+        columns={
+            "quotation_id": "Quotation ID",
+            "reference": "Reference",
+            "quote_date": "Quote date",
+            "customer_company": "Customer",
+            "customer_contact": "Contact",
+            "customer_address": "Address",
+            "customer_district": "District",
+            "attention_name": "Attention",
+            "attention_title": "Attention title",
+            "subject": "Subject",
+            "total_amount": "Total amount",
+            "discount_pct": "Discount (%)",
+            "status": "Status",
+            "follow_up_status": "Follow-up status",
+            "follow_up_notes": "Follow-up notes",
+            "follow_up_date": "Follow-up date",
+            "reminder_label": "Reminder",
+            "payment_receipt_path": "Receipt path",
+            "salesperson_name": "Salesperson",
+            "salesperson_title": "Salesperson title",
+            "salesperson_contact": "Salesperson contact",
+            "remarks_internal": "Internal remarks",
+            "created_at": "Created at",
+            "updated_at": "Updated at",
+        }
+    )
+
+
 def _build_master_sheet(sheets: list[tuple[str, pd.DataFrame]]) -> pd.DataFrame:
     rows = [
         {
@@ -2483,6 +2591,7 @@ def export_database_to_excel(conn) -> bytes:
         ("Warranties", _build_warranties_export),
         ("Services", _build_services_export),
         ("Maintenance", _build_maintenance_export),
+        ("Quotations", _build_quotations_export),
     ]
 
     sheet_data: list[tuple[str, pd.DataFrame]] = []
@@ -2495,7 +2604,7 @@ def export_database_to_excel(conn) -> bytes:
 
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        for sheet_name, df in ordered_sheets[:6]:
+        for sheet_name, df in ordered_sheets:
             safe_name = sheet_name[:31] if sheet_name else "Sheet"
             if not safe_name:
                 safe_name = "Sheet"
@@ -2504,6 +2613,24 @@ def export_database_to_excel(conn) -> bytes:
             else:
                 df_to_write = df
             df_to_write.to_excel(writer, sheet_name=safe_name, index=False)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def export_full_archive() -> bytes:
+    """Bundle the entire data directory and database into a portable archive."""
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        db_path = Path(DB_PATH)
+        if db_path.exists():
+            zf.write(db_path, arcname=db_path.name)
+        if BASE_DIR.exists():
+            for path in BASE_DIR.rglob("*"):
+                if path.is_file():
+                    if db_path.exists() and path.resolve() == db_path.resolve():
+                        continue
+                    zf.write(path, arcname=str(path.relative_to(BASE_DIR)))
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -3345,13 +3472,22 @@ def dashboard(conn):
             st.session_state.show_deleted_panel = False
 
         excel_bytes = export_database_to_excel(conn)
-        admin_action_cols = st.columns([0.78, 0.22])
-        with admin_action_cols[0]:
+        archive_bytes = export_full_archive()
+        download_cols = st.columns([0.5, 0.5])
+        with download_cols[0]:
             st.download_button(
                 "⬇️ Download full database (Excel)",
                 excel_bytes,
                 file_name="ps_crm.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        with download_cols[1]:
+            st.download_button(
+                "⬇️ Download full archive (.rar)",
+                archive_bytes,
+                file_name="ps_crm_full.rar",
+                mime="application/x-rar-compressed",
+                help="Bundles the database, uploads, and receipts into one portable file.",
             )
 
         toggle_label = (
@@ -3359,7 +3495,8 @@ def dashboard(conn):
             if not st.session_state.get("show_deleted_panel")
             else "Hide deleted data"
         )
-        with admin_action_cols[1]:
+        toggle_cols = st.columns([0.78, 0.22])
+        with toggle_cols[1]:
             if st.button(
                 toggle_label,
                 key="toggle_deleted_panel",
@@ -5822,6 +5959,7 @@ def _build_quotation_workbook(
 
 
 def _load_letterhead_data_uri(template_choice: Optional[str] = None) -> Optional[str]:
+    template_choice = template_choice or "PS letterhead"
     base_dir = Path(__file__).resolve().parent
     default_candidates = [
         base_dir / "PS-SALES-main" / "ps_letterhead.png",
@@ -5971,6 +6109,7 @@ def _save_quotation_record(conn, payload: dict) -> Optional[int]:
         "total_amount",
         "discount_pct",
         "status",
+        "payment_receipt_path",
         "follow_up_status",
         "follow_up_notes",
         "follow_up_date",
@@ -6005,7 +6144,13 @@ def _update_quotation_records(conn, updates: Iterable[dict[str, object]]) -> Non
             quotation_id = int(entry.get("quotation_id"))
         except Exception:
             continue
-        follow_up_date = to_iso_date(entry.get("follow_up_date"))
+        status_value = clean_text(entry.get("status")) or "pending"
+        follow_up_date = None if status_value == "paid" else to_iso_date(entry.get("follow_up_date"))
+        reminder_label = (
+            "Payment marked as received; follow-up reminders disabled."
+            if status_value == "paid"
+            else clean_text(entry.get("reminder_label"))
+        )
         conn.execute(
             """
             UPDATE quotations
@@ -6018,11 +6163,11 @@ def _update_quotation_records(conn, updates: Iterable[dict[str, object]]) -> Non
             WHERE quotation_id=?
             """,
             (
-                clean_text(entry.get("status")) or "pending",
+                status_value,
                 clean_text(entry.get("follow_up_status")),
                 clean_text(entry.get("follow_up_notes")),
                 follow_up_date,
-                clean_text(entry.get("reminder_label")),
+                reminder_label,
                 quotation_id,
             ),
         )
@@ -6086,10 +6231,11 @@ def _render_quotation_section(conn):
         header_cols = st.columns((1.25, 0.75))
         with header_cols[0]:
             st.caption("Compose, save and track quotations from a single workspace.")
-            template_choice = st.selectbox(
-                "Select quotation letter",
-                ["Default letterhead", "PS letterhead"],
-                key="quotation_letter_template",
+            template_choice = "PS letterhead"
+            st.session_state["quotation_letter_template"] = template_choice
+            st.info(
+                "Using the PS letterhead automatically. Your quotation details are overlaid live.",
+                icon="🧾",
             )
         with header_cols[1]:
             st.caption("Productivity assists")
@@ -6221,8 +6367,14 @@ def _render_quotation_section(conn):
 
         items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
         if not items_df_seed.empty:
+            for legacy_col, new_col in (("hsn", "specs"), ("unit", "kva")):
+                if legacy_col in items_df_seed.columns and new_col not in items_df_seed.columns:
+                    items_df_seed[new_col] = items_df_seed[legacy_col]
+            for required in ["kva", "specs"]:
+                if required not in items_df_seed.columns:
+                    items_df_seed[required] = ""
             items_df_seed = items_df_seed[
-                ["description", "hsn", "unit", "quantity", "rate", "discount"]
+                ["description", "kva", "specs", "quantity", "rate", "discount"]
             ]
         if items_df_seed.empty:
             items_df_seed = pd.DataFrame(_default_quotation_items())
@@ -6238,10 +6390,12 @@ def _render_quotation_section(conn):
                     "Tracked products",
                     help="Describe the item or service",
                 ),
-                "hsn": st.column_config.TextColumn(
-                    "HSN/SAC", help="HSN/SAC code, if applicable"
+                "kva": st.column_config.TextColumn(
+                    "kVA / Capacity", help="Power rating for the item"
                 ),
-                "unit": st.column_config.TextColumn("Unit"),
+                "specs": st.column_config.TextColumn(
+                    "Specs", help="Key specifications or notes"
+                ),
                 "quantity": st.column_config.NumberColumn(
                     "Quantity",
                     min_value=0.0,
@@ -6272,6 +6426,22 @@ def _render_quotation_section(conn):
             key="quotation_closing",
         )
 
+        status_value = st.selectbox(
+            "Quotation status",
+            status_choices,
+            format_func=lambda val: val.title(),
+            key="quotation_status",
+        )
+
+        receipt_upload = None
+        if status_value == "paid":
+            receipt_upload = st.file_uploader(
+                "Payment receipt (PDF or image)",
+                type=["pdf", "png", "jpg", "jpeg", "webp"],
+                key="quotation_receipt_upload",
+                help="Attach proof of payment to lock in this quotation.",
+            )
+
         follow_up_status = st.selectbox(
             "Salesperson follow-up status",
             ["Possible", "Hot", "Cold", "Closed", "No response"],
@@ -6282,28 +6452,32 @@ def _render_quotation_section(conn):
             value=st.session_state.get("quotation_follow_up_notes", ""),
             key="quotation_follow_up_notes",
         )
-        follow_up_choice = st.radio(
-            "Suggested follow-up timing",
-            list(follow_up_presets.keys()),
-            horizontal=True,
-            key="quotation_follow_up_choice",
-        )
-        follow_up_date_value = st.date_input(
-            "Follow-up date",
-            value=st.session_state.get("quotation_follow_up_date") or (default_date + timedelta(days=3)),
-            key="quotation_follow_up_date",
-        )
 
-        status_value = st.selectbox(
-            "Quotation status",
-            status_choices,
-            format_func=lambda val: val.title(),
-            key="quotation_status",
-        )
+        follow_up_choice_default = st.session_state.get("quotation_follow_up_choice") or list(follow_up_presets.keys())[0]
+        follow_up_choice = follow_up_choice_default
+        follow_up_date_value = st.session_state.get("quotation_follow_up_date") or (default_date + timedelta(days=3))
+        if status_value != "paid":
+            follow_up_choice = st.radio(
+                "Suggested follow-up timing",
+                list(follow_up_presets.keys()),
+                horizontal=True,
+                key="quotation_follow_up_choice",
+            )
+            follow_up_date_value = st.date_input(
+                "Follow-up date",
+                value=follow_up_date_value,
+                key="quotation_follow_up_date",
+            )
+        else:
+            st.caption("Follow-up dates are hidden because this quotation is already paid.")
+            st.session_state.setdefault("quotation_follow_up_choice", follow_up_choice_default)
+            st.session_state.pop("quotation_follow_up_date", None)
 
         action_cols = st.columns([1, 1])
-        reset = action_cols[1].form_submit_button("Reset form")
-        submit = action_cols[0].form_submit_button("Create quotation", type="primary")
+        submit = action_cols[0].form_submit_button(
+            "Create quotation", type="primary", use_container_width=True
+        )
+        reset = action_cols[1].form_submit_button("Reset form", use_container_width=True)
 
         if reset:
             _reset_quotation_form_state()
@@ -6341,18 +6515,32 @@ def _render_quotation_section(conn):
             st.error("Add at least one item with a description to create a quotation.")
             return
 
-        reminder_days = follow_up_presets.get(follow_up_choice)
-        follow_up_date = follow_up_date_value
-        if reminder_days is not None:
-            follow_up_date = quotation_date + timedelta(days=reminder_days)
-        follow_up_iso = to_iso_date(follow_up_date)
-        follow_up_label = format_period_range(follow_up_iso, follow_up_iso)
-        reminder_label = (
-            f"Reminder scheduled in {reminder_days} days on {follow_up_label}."
-            if reminder_days is not None
-            else f"Reminder scheduled for {follow_up_label}."
-        )
+        reminder_days = follow_up_presets.get(follow_up_choice) if status_value != "paid" else None
+        follow_up_date = follow_up_date_value if status_value != "paid" else None
+        follow_up_iso = None
+        follow_up_label = "Payment received - follow-up not required."
+        reminder_label = None
+        if status_value != "paid":
+            if reminder_days is not None:
+                follow_up_date = quotation_date + timedelta(days=reminder_days)
+            follow_up_iso = to_iso_date(follow_up_date)
+            follow_up_label = format_period_range(follow_up_iso, follow_up_iso)
+            reminder_label = (
+                f"Reminder scheduled in {reminder_days} days on {follow_up_label}."
+                if reminder_days is not None
+                else f"Reminder scheduled for {follow_up_label}."
+            )
+        else:
+            reminder_label = "Payment marked as received; follow-up reminders disabled."
         grand_total_value = totals_data["grand_total"]
+
+        receipt_path = None
+        if status_value == "paid":
+            receipt_identifier = _sanitize_path_component(reference_value) or f"quotation_{quotation_date.strftime('%Y%m%d')}"
+            receipt_path = store_payment_receipt(
+                receipt_upload,
+                identifier=f"{receipt_identifier}_receipt",
+            )
 
         metadata = OrderedDict()
         metadata["Reference number"] = reference_value
@@ -6375,6 +6563,7 @@ def _render_quotation_section(conn):
         metadata["Follow-up status"] = follow_up_status
         metadata["Follow-up date"] = follow_up_label
         metadata["Remarks (admin)"] = admin_notes
+        metadata["Payment receipt"] = "Attached" if receipt_path else "Not uploaded"
         metadata["Total amount (BDT)"] = grand_total_value
         metadata["Status"] = status_value.title()
 
@@ -6445,6 +6634,7 @@ def _render_quotation_section(conn):
             "salesperson_title": salesperson_title,
             "salesperson_contact": salesperson_contact,
             "remarks_internal": admin_notes,
+            "payment_receipt_path": receipt_path,
             "created_by": current_user_id(),
         }
         record_id = _save_quotation_record(conn, payload)
@@ -6460,6 +6650,7 @@ def _render_quotation_section(conn):
             "record_id": record_id,
             "reminder_label": reminder_label,
             "letter_template": template_choice,
+            "payment_receipt_path": receipt_path,
         }
 
     result = st.session_state.get(result_key)
@@ -6482,6 +6673,19 @@ def _render_quotation_section(conn):
         st.markdown(f"**Grand total:** {grand_total_label}")
         if result.get("reminder_label"):
             st.caption(result.get("reminder_label"))
+
+        receipt_path = result.get("payment_receipt_path")
+        if receipt_path:
+            receipt_file = BASE_DIR / receipt_path
+            if receipt_file.exists():
+                with open(receipt_file, "rb") as fh:
+                    st.download_button(
+                        "Download payment receipt",
+                        data=fh.read(),
+                        file_name=receipt_file.name,
+                        mime="application/octet-stream",
+                        key="quotation_receipt_download",
+                    )
 
         _render_letterhead_preview(
             result.get("metadata", {}),
@@ -6507,7 +6711,8 @@ def _render_quotation_management(conn):
         dedent(
             f"""
             SELECT quotation_id, reference, quote_date, customer_company, customer_contact,
-                   total_amount, status, follow_up_status, follow_up_notes, follow_up_date, reminder_label
+                   total_amount, status, follow_up_status, follow_up_notes, follow_up_date, reminder_label,
+                   payment_receipt_path
             FROM quotations
             {scope_clause}
             ORDER BY datetime(quote_date) DESC, quotation_id DESC
@@ -6544,6 +6749,10 @@ def _render_quotation_management(conn):
         "customer_contact": st.column_config.TextColumn("Contact"),
         "total_amount": st.column_config.TextColumn("Total amount (BDT)"),
         "quote_date": st.column_config.TextColumn("Quote date"),
+        "payment_receipt_path": st.column_config.TextColumn(
+            "Receipt proof",
+            help="Relative path to the uploaded payment receipt, if any.",
+        ),
     }
 
     edited = st.data_editor(
