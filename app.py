@@ -346,6 +346,7 @@ NOTIFICATION_EVENT_LABELS = {
     "service_updated": "Service updated",
     "maintenance_created": "Maintenance created",
     "maintenance_updated": "Maintenance updated",
+    "quotation_created": "Quotation created",
     "warranty_updated": "Warranty updated",
     "report_submitted": "Report submitted",
     "report_updated": "Report updated",
@@ -373,6 +374,8 @@ CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE,
     pass_hash TEXT,
+    phone TEXT,
+    title TEXT,
     role TEXT DEFAULT 'staff',
     created_at TEXT DEFAULT (datetime('now'))
 );
@@ -580,6 +583,7 @@ CREATE TABLE IF NOT EXISTS quotations (
     salesperson_name TEXT,
     salesperson_title TEXT,
     salesperson_contact TEXT,
+    document_path TEXT,
     remarks_internal TEXT,
     created_by INTEGER,
     created_at TEXT DEFAULT (datetime('now')),
@@ -651,6 +655,8 @@ def ensure_schema_upgrades(conn):
     add_column("customers", "sales_person", "TEXT")
     add_column("customers", "amount_spent", "REAL")
     add_column("customers", "created_by", "INTEGER")
+    add_column("users", "phone", "TEXT")
+    add_column("users", "title", "TEXT")
     add_column("services", "status", "TEXT DEFAULT 'In progress'")
     add_column("services", "service_start_date", "TEXT")
     add_column("services", "service_end_date", "TEXT")
@@ -664,6 +670,7 @@ def ensure_schema_upgrades(conn):
     add_column("maintenance_records", "maintenance_start_date", "TEXT")
     add_column("maintenance_records", "maintenance_end_date", "TEXT")
     add_column("maintenance_records", "maintenance_product_info", "TEXT")
+    add_column("quotations", "document_path", "TEXT")
     add_column("warranties", "remarks", "TEXT")
     add_column("delivery_orders", "remarks", "TEXT")
     add_column("import_history", "amount_spent", "REAL")
@@ -2976,9 +2983,19 @@ def login_box(conn):
         p = st.text_input("Password", type="password")
         ok = st.form_submit_button("Login")
     if ok:
-        row = df_query(conn, "SELECT user_id, username, pass_hash, role FROM users WHERE username = ?", (u,))
+        row = df_query(
+            conn,
+            "SELECT user_id, username, pass_hash, role, phone, title FROM users WHERE username = ?",
+            (u,),
+        )
         if not row.empty and hashlib.sha256(p.encode("utf-8")).hexdigest() == row.iloc[0]["pass_hash"]:
-            st.session_state.user = {"user_id": int(row.iloc[0]["user_id"]), "username": row.iloc[0]["username"], "role": row.iloc[0]["role"]}
+            st.session_state.user = {
+                "user_id": int(row.iloc[0]["user_id"]),
+                "username": row.iloc[0]["username"],
+                "role": row.iloc[0]["role"],
+                "phone": clean_text(row.iloc[0].get("phone")),
+                "title": clean_text(row.iloc[0].get("title")),
+            }
             st.session_state.page = "Dashboard"
             st.session_state.just_logged_in = True
             _safe_rerun()
@@ -3344,6 +3361,62 @@ def dashboard(conn):
                 file_name=path.name,
                 key=f"recent_attachment_{row.get('report_id')}",
             )
+
+    if is_admin:
+        staff_quotes = df_query(
+            conn,
+            dedent(
+                """
+                SELECT q.quotation_id,
+                       q.reference,
+                       q.customer_company,
+                       q.total_amount,
+                       q.status,
+                       q.quote_date,
+                       q.document_path,
+                       q.salesperson_name,
+                       u.username
+                FROM quotations q
+                LEFT JOIN users u ON u.user_id = q.created_by
+                ORDER BY datetime(q.quote_date) DESC, q.quotation_id DESC
+                LIMIT 8
+                """
+            ),
+        )
+        if not staff_quotes.empty:
+            staff_quotes = fmt_dates(staff_quotes, ["quote_date"])
+            st.markdown("#### Team quotations (downloadable)")
+            for _, row in staff_quotes.iterrows():
+                cols = st.columns((1.5, 1, 1, 1))
+                cols[0].markdown(
+                    f"**{clean_text(row.get('reference')) or 'Quotation'}**\n"
+                    f"{clean_text(row.get('customer_company')) or '(customer)'}"
+                )
+                cols[1].write(clean_text(row.get("salesperson_name")) or clean_text(row.get("username")) or "—")
+                total_value = format_money(row.get("total_amount")) or f"{_coerce_float(row.get('total_amount'), 0.0):,.2f}"
+                cols[2].write(
+                    f"{clean_text(row.get('status')).title() if row.get('status') else 'Pending'}\n"
+                    f"{row.get('quote_date')}\n{total_value}"
+                )
+                doc_path = clean_text(row.get("document_path"))
+                if doc_path:
+                    file_path = BASE_DIR / doc_path
+                    download_key = f"dash_quote_{int(row.get('quotation_id'))}"
+                    if file_path.exists():
+                        try:
+                            payload = file_path.read_bytes()
+                        except OSError:
+                            payload = None
+                        if payload:
+                            cols[3].download_button(
+                                "Download", payload, file_name=file_path.name, key=download_key
+                            )
+                        else:
+                            cols[3].caption("File unavailable")
+                    else:
+                        cols[3].caption("File missing")
+                else:
+                    cols[3].caption("No file saved")
 
     quote_scope, quote_params = _quotation_scope_filter()
     quote_clause = quote_scope.replace("WHERE", "WHERE", 1)
@@ -5366,50 +5439,42 @@ def _render_service_section(conn, *, show_heading: bool = True):
             key="service_new_condition_notes",
             help="Add any notes about the generator condition once the job is done.",
         )
-        service_product_count = st.number_input(
-            "Products sold during service",
-            min_value=0,
-            max_value=20,
-            value=0,
-            step=1,
-            key="service_additional_product_count",
-            help="Capture any new items sold while this service was in progress.",
-        )
-        service_product_entries: list[dict[str, object]] = []
-        for idx in range(int(service_product_count)):
-            cols = st.columns((2, 2, 2, 1))
-            with cols[0]:
-                product_name = st.text_input(
-                    f"Product {idx + 1} details",
-                    key=f"service_product_name_{idx}",
-                )
-            with cols[1]:
-                product_model = st.text_input(
-                    f"Model {idx + 1}",
-                    key=f"service_product_model_{idx}",
-                )
-            with cols[2]:
-                product_serial = st.text_input(
-                    f"Serial {idx + 1}",
-                    key=f"service_product_serial_{idx}",
-                )
-            with cols[3]:
-                product_quantity = st.number_input(
-                    f"Qty {idx + 1}",
-                    min_value=1,
-                    max_value=999,
-                    value=1,
-                    step=1,
-                    key=f"service_product_quantity_{idx}",
-                )
-            service_product_entries.append(
+        st.markdown("**Products sold during service**")
+        service_product_rows = st.session_state.get(
+            "service_product_rows",
+            [
                 {
-                    "name": product_name,
-                    "model": product_model,
-                    "serial": product_serial,
-                    "quantity": int(product_quantity),
+                    "name": "",
+                    "model": "",
+                    "serial": "",
+                    "quantity": 1,
                 }
+            ],
         )
+        service_product_editor = st.data_editor(
+            pd.DataFrame(service_product_rows),
+            num_rows="dynamic",
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "name": st.column_config.TextColumn("Product", help="Name / description"),
+                "model": st.column_config.TextColumn("Model"),
+                "serial": st.column_config.TextColumn("Serial"),
+                "quantity": st.column_config.NumberColumn(
+                    "Qty",
+                    min_value=1,
+                    step=1,
+                    format="%d",
+                ),
+            },
+            key="service_product_table",
+        )
+        service_product_entries = (
+            service_product_editor.to_dict("records")
+            if isinstance(service_product_editor, pd.DataFrame)
+            else []
+        )
+        st.session_state["service_product_rows"] = service_product_entries
         service_files = st.file_uploader(
             "Attach service documents (PDF)",
             type=["pdf"],
@@ -6036,24 +6101,32 @@ def _render_letterhead_preview(
     )
     follow_up = html.escape(metadata.get("Follow-up date", ""))
     project = html.escape(metadata.get("Customer district", ""))
+    date_value = html.escape(metadata.get("Date", ""))
+    prepared_by = html.escape(metadata.get("Salesperson name", ""))
+    prepared_title = html.escape(metadata.get("Salesperson title", ""))
+    prepared_contact = html.escape(metadata.get("Salesperson contact", ""))
+    attention_name = html.escape(metadata.get("Attention name", ""))
+    attention_title = html.escape(metadata.get("Attention title", ""))
 
     preview_html = f"""
     <div style="margin-top: 1rem; border: 1px solid #e5e7eb; border-radius: 14px; overflow: hidden;">
-      <div style="position: relative; min-height: 780px; background: url('{data_uri}') no-repeat center top / cover; padding: 180px 64px 120px 64px; color: #0f172a; font-family: 'Inter', sans-serif;">
-        <div style="background: rgba(255, 255, 255, 0.88); padding: 24px; border-radius: 12px; max-width: 840px; box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);">
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+      <div style="position: relative; min-height: 820px; background: url('{data_uri}') no-repeat center top / cover; padding: 180px 42px 120px 42px; color: #0f172a; font-family: 'Inter', sans-serif;">
+        <div style="background: rgba(255, 255, 255, 0.9); padding: 28px; border-radius: 12px; max-width: 900px; margin: 0 auto; box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;">
             <div>
               <div style="font-size: 22px; font-weight: 700; color: #0f172a;">{subject}</div>
               <div style="margin-top: 6px; color: #475569; font-size: 14px;">Ref: {reference or '—'}</div>
-              <div style="margin-top: 2px; color: #475569; font-size: 14px;">District: {project or '—'}</div>
+              <div style="margin-top: 2px; color: #475569; font-size: 14px;">Project: {project or '—'}</div>
             </div>
-            <div style="text-align: right;">
-              <div style="color: #475569; font-size: 13px;">Grand total</div>
+            <div style="text-align: right; min-width: 220px;">
+              <div style="color: #475569; font-size: 13px;">Date</div>
+              <div style="font-size: 16px; font-weight: 600; color: #0f172a;">{date_value or '—'}</div>
+              <div style="margin-top: 10px; color: #475569; font-size: 13px;">Grand total</div>
               <div style="font-size: 20px; font-weight: 800; color: #0f172a;">{grand_total}</div>
             </div>
           </div>
           <hr style="margin: 18px 0; border: none; border-top: 1px solid #e2e8f0;" />
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px;">
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px;">
             <div style="padding: 12px; background: #f8fafc; border-radius: 10px;">
               <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Customer</div>
               <div style="margin-top: 6px; font-weight: 600; color: #0f172a;">{customer or '—'}</div>
@@ -6061,16 +6134,23 @@ def _render_letterhead_preview(
               <div style="margin-top: 4px; color: #475569; font-size: 13px;">{address or ''}</div>
             </div>
             <div style="padding: 12px; background: #f8fafc; border-radius: 10px;">
-              <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Reference</div>
-              <div style="margin-top: 6px; font-weight: 600; color: #0f172a;">{reference or '—'}</div>
+              <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Attention</div>
+              <div style="margin-top: 6px; font-weight: 600; color: #0f172a;">{attention_name or '—'}</div>
+              <div style="margin-top: 2px; color: #475569; font-size: 13px;">{attention_title or ''}</div>
               <div style="margin-top: 8px; font-size: 12px; color: #64748b;">Follow-up</div>
               <div style="color: #0f172a; margin-top: 2px;">{follow_up or '—'}</div>
             </div>
+            <div style="padding: 12px; background: #f8fafc; border-radius: 10px;">
+              <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Prepared by</div>
+              <div style="margin-top: 6px; font-weight: 600; color: #0f172a;">{prepared_by or '—'}</div>
+              <div style="margin-top: 2px; color: #475569; font-size: 13px;">{prepared_title or ''}</div>
+              <div style="margin-top: 4px; color: #475569; font-size: 13px;">{prepared_contact or ''}</div>
+            </div>
           </div>
-          <div style="margin-top: 12px; color: #0f172a; line-height: 1.6;">
-            <div style="margin-bottom: 4px;">{salutation}</div>
+          <div style="margin-top: 14px; color: #0f172a; line-height: 1.65; padding: 12px; background: #fff; border-radius: 10px; border: 1px solid #e2e8f0;">
+            <div style="margin-bottom: 6px; font-weight: 600;">{salutation}</div>
             <div>{intro or '—'}</div>
-            <div style="margin-top: 10px; font-weight: 600;">{closing or ''}</div>
+            <div style="margin-top: 12px; font-weight: 600;">{closing or ''}</div>
           </div>
         </div>
       </div>
@@ -6118,6 +6198,7 @@ def _save_quotation_record(conn, payload: dict) -> Optional[int]:
         "salesperson_name",
         "salesperson_title",
         "salesperson_contact",
+        "document_path",
         "remarks_internal",
         "created_by",
     ]
@@ -6136,6 +6217,27 @@ def _save_quotation_record(conn, payload: dict) -> Optional[int]:
     except sqlite3.Error:
         return None
     return int(cur.lastrowid)
+
+
+def _persist_quotation_document(
+    record_id: int, workbook_bytes: bytes, reference: Optional[str]
+) -> Optional[str]:
+    if not workbook_bytes or record_id is None:
+        return None
+    ensure_upload_dirs()
+    safe_ref = re.sub(r"[^a-zA-Z0-9_-]+", "-", clean_text(reference) or "").strip("-")
+    safe_ref = safe_ref or "quotation"
+    dest = QUOTATION_RECEIPT_DIR / f"quotation_{record_id}_{safe_ref}.xlsx"
+    counter = 1
+    while dest.exists():
+        dest = QUOTATION_RECEIPT_DIR / f"quotation_{record_id}_{safe_ref}_{counter}.xlsx"
+        counter += 1
+    try:
+        with open(dest, "wb") as fh:
+            fh.write(workbook_bytes)
+        return str(dest.relative_to(BASE_DIR))
+    except (OSError, ValueError):
+        return None
 
 
 def _update_quotation_records(conn, updates: Iterable[dict[str, object]]) -> None:
@@ -6193,6 +6295,11 @@ def _render_quotation_section(conn):
 
     user = get_current_user()
     salesperson_seed = clean_text(user.get("username")) or ""
+    salesperson_phone = clean_text(user.get("phone")) or ""
+    salesperson_title_seed = clean_text(user.get("title")) or "Salesperson"
+    st.session_state.setdefault("quotation_prepared_by", salesperson_seed)
+    st.session_state.setdefault("quotation_salesperson_contact", salesperson_phone)
+    st.session_state.setdefault("quotation_salesperson_title", salesperson_title_seed)
     customer_df = df_query(
         conn,
         """
@@ -6503,6 +6610,75 @@ def _render_quotation_section(conn):
             if not st.session_state.get("quotation_customer_district"):
                 st.session_state["quotation_customer_district"] = clean_text(seed.get("district")) or ""
 
+    _, preview_totals = normalize_quotation_items(
+        st.session_state.get("quotation_item_rows", [])
+    )
+    preview_grand_total = format_money(preview_totals.get("grand_total")) or f"{_coerce_float(preview_totals.get('grand_total'), 0.0):,.2f}"
+    preview_follow_up = format_period_range(
+        to_iso_date(st.session_state.get("quotation_follow_up_date")),
+        to_iso_date(st.session_state.get("quotation_follow_up_date")),
+    )
+    preview_metadata = {
+        "Reference number": st.session_state.get("quotation_reference"),
+        "Date": st.session_state.get("quotation_date", default_date).strftime(DATE_FMT)
+        if st.session_state.get("quotation_date")
+        else default_date.strftime(DATE_FMT),
+        "Customer company": st.session_state.get("quotation_company_name"),
+        "Customer contact name": st.session_state.get("quotation_customer_name"),
+        "Customer address": st.session_state.get("quotation_customer_address"),
+        "Customer contact": st.session_state.get("quotation_customer_contact"),
+        "Customer district": st.session_state.get("quotation_customer_district"),
+        "Subject": st.session_state.get("quotation_subject"),
+        "Introduction": st.session_state.get("quotation_introduction"),
+        "Closing": st.session_state.get("quotation_closing"),
+        "Follow-up date": preview_follow_up,
+        "Salutation": st.session_state.get("quotation_salutation"),
+        "Quotation reference": st.session_state.get("quotation_reference"),
+        "Subject / scope": st.session_state.get("quotation_subject"),
+        "Customer / organisation": st.session_state.get("quotation_company_name"),
+        "Salesperson name": st.session_state.get("quotation_prepared_by"),
+        "Salesperson title": st.session_state.get("quotation_salesperson_title"),
+        "Salesperson contact": st.session_state.get("quotation_salesperson_contact"),
+        "Attention name": st.session_state.get("quotation_attention_name"),
+        "Attention title": st.session_state.get("quotation_attention_title"),
+    }
+
+    st.markdown("#### Live quotation preview")
+    preview_cols = st.columns([1, 1.15])
+    with preview_cols[0]:
+        st.caption("See how your quotation details map onto the letterhead while composing.")
+        preview_table = pd.DataFrame(
+            [
+                ("Subject", preview_metadata.get("Subject") or "Quotation"),
+                ("Date", preview_metadata.get("Date") or ""),
+                ("Customer", preview_metadata.get("Customer company") or ""),
+                ("Contact", preview_metadata.get("Customer contact") or ""),
+                ("Reference", preview_metadata.get("Reference number") or ""),
+                ("Follow-up", preview_follow_up or ""),
+                (
+                    "Prepared by",
+                    " ".join(
+                        part
+                        for part in [
+                            preview_metadata.get("Salesperson name"),
+                            preview_metadata.get("Salesperson title"),
+                        ]
+                        if part
+                    ),
+                ),
+                ("Contact number", preview_metadata.get("Salesperson contact") or ""),
+            ],
+            columns=["Field", "Value"],
+        )
+        st.table(preview_table)
+        st.markdown(f"**Estimated grand total:** {preview_grand_total}")
+    with preview_cols[1]:
+        _render_letterhead_preview(
+            preview_metadata,
+            preview_grand_total,
+            template_choice=st.session_state.get("quotation_letter_template"),
+        )
+
     if submit:
         item_records = st.session_state.get("quotation_item_rows", [])
         prepared_items = [dict(item) for item in item_records]
@@ -6633,11 +6809,41 @@ def _render_quotation_section(conn):
             "salesperson_name": prepared_by,
             "salesperson_title": salesperson_title,
             "salesperson_contact": salesperson_contact,
+            "document_path": None,
             "remarks_internal": admin_notes,
             "payment_receipt_path": receipt_path,
             "created_by": current_user_id(),
         }
         record_id = _save_quotation_record(conn, payload)
+        document_path = None
+        if record_id:
+            document_path = _persist_quotation_document(
+                record_id, workbook_bytes, reference_value
+            )
+            if document_path:
+                try:
+                    conn.execute(
+                        "UPDATE quotations SET document_path=? WHERE quotation_id=?",
+                        (document_path, int(record_id)),
+                    )
+                    conn.commit()
+                except sqlite3.Error:
+                    document_path = None
+            summary_label = reference_value or f"Quotation #{record_id}"
+            log_activity(
+                conn,
+                event_type="quotation_created",
+                description=f"{prepared_by or 'Sales'} logged {summary_label} ({format_money(grand_total_value) or grand_total_value:,.2f})",
+                entity_type="quotation",
+                entity_id=int(record_id),
+            )
+
+            if not current_user_is_admin():
+                push_runtime_notification(
+                    "New quotation submitted",
+                    f"{prepared_by or 'Sales'} created {summary_label}.",
+                    severity="info",
+                )
 
         st.session_state[result_key] = {
             "display": display_df,
@@ -6651,56 +6857,79 @@ def _render_quotation_section(conn):
             "reminder_label": reminder_label,
             "letter_template": template_choice,
             "payment_receipt_path": receipt_path,
+            "document_path": document_path,
         }
 
     result = st.session_state.get(result_key)
     if result:
         st.success("Quotation ready. Review the details below or download the Excel file.")
         metadata_df = pd.DataFrame(result["metadata_items"], columns=["Field", "Value"])
-        st.table(metadata_df)
-
-        st.dataframe(result["display"], use_container_width=True)
-
-        totals_rows = result.get("totals_rows", [])
-        if totals_rows:
-            totals_df = pd.DataFrame(totals_rows, columns=["Label", "Amount"])
-            totals_df["Amount"] = totals_df["Amount"].apply(
-                lambda value: format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
-            )
-            st.table(totals_df)
-
         grand_total_label = format_money(result["grand_total"]) or f"{result['grand_total']:,.2f}"
-        st.markdown(f"**Grand total:** {grand_total_label}")
-        if result.get("reminder_label"):
-            st.caption(result.get("reminder_label"))
 
-        receipt_path = result.get("payment_receipt_path")
-        if receipt_path:
-            receipt_file = BASE_DIR / receipt_path
-            if receipt_file.exists():
-                with open(receipt_file, "rb") as fh:
-                    st.download_button(
-                        "Download payment receipt",
-                        data=fh.read(),
-                        file_name=receipt_file.name,
-                        mime="application/octet-stream",
-                        key="quotation_receipt_download",
-                    )
+        summary_cols = st.columns([1, 1.2])
+        with summary_cols[0]:
+            st.markdown("##### Quotation summary")
+            st.table(metadata_df)
 
-        _render_letterhead_preview(
-            result.get("metadata", {}),
-            grand_total_label,
-            template_choice=result.get("letter_template")
-            or st.session_state.get("quotation_letter_template"),
-        )
+            st.dataframe(result["display"], use_container_width=True)
 
-        st.download_button(
-            "Download quotation",
-            data=result["excel_bytes"],
-            file_name=result["filename"],
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="quotation_download",
-        )
+            totals_rows = result.get("totals_rows", [])
+            if totals_rows:
+                totals_df = pd.DataFrame(totals_rows, columns=["Label", "Amount"])
+                totals_df["Amount"] = totals_df["Amount"].apply(
+                    lambda value: format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
+                )
+                st.table(totals_df)
+
+            st.markdown(f"**Grand total:** {grand_total_label}")
+            if result.get("reminder_label"):
+                st.caption(result.get("reminder_label"))
+
+            receipt_path = result.get("payment_receipt_path")
+            if receipt_path:
+                receipt_file = BASE_DIR / receipt_path
+                if receipt_file.exists():
+                    with open(receipt_file, "rb") as fh:
+                        st.download_button(
+                            "Download payment receipt",
+                            data=fh.read(),
+                            file_name=receipt_file.name,
+                            mime="application/octet-stream",
+                            key="quotation_receipt_download",
+                        )
+
+            st.download_button(
+                "Download quotation",
+                data=result["excel_bytes"],
+                file_name=result["filename"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="quotation_download",
+            )
+
+            saved_doc_path = result.get("document_path")
+            if saved_doc_path:
+                saved_doc = BASE_DIR / saved_doc_path
+                if saved_doc.exists():
+                    try:
+                        saved_bytes = saved_doc.read_bytes()
+                    except OSError:
+                        saved_bytes = None
+                    if saved_bytes:
+                        st.download_button(
+                            "Download saved copy",
+                            data=saved_bytes,
+                            file_name=saved_doc.name,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="quotation_saved_download",
+                        )
+
+        with summary_cols[1]:
+            _render_letterhead_preview(
+                result.get("metadata", {}),
+                grand_total_label,
+                template_choice=result.get("letter_template")
+                or st.session_state.get("quotation_letter_template"),
+            )
 
 
 def _render_quotation_management(conn):
@@ -6766,6 +6995,256 @@ def _render_quotation_management(conn):
     if st.button("Save quotation updates", key="quotation_tracker_save"):
         _update_quotation_records(conn, edited.to_dict("records"))
         st.success("Quotation statuses updated.")
+
+
+def advanced_search_page(conn):
+    st.subheader("🔎 Advanced Search")
+    if not current_user_is_admin():
+        st.warning("Advanced filters are available to admins only.")
+        return
+
+    search_text = st.text_input(
+        "Keyword search",
+        key="advanced_search_keyword",
+        help="Search across quotations, customers, delivery orders, services, and maintenance logs.",
+    )
+    date_window = st.date_input(
+        "Date window",
+        value=(date.today() - timedelta(days=30), date.today()),
+        help="Filter results by creation or activity date.",
+        key="advanced_search_dates",
+    )
+    min_amount = st.number_input(
+        "Minimum amount (for quotations)",
+        min_value=0.0,
+        step=100.0,
+        format="%.2f",
+        key="advanced_search_min_amount",
+    )
+    record_types = [
+        "Quotations",
+        "Services",
+        "Maintenance",
+        "Delivery orders",
+        "Customers",
+    ]
+    selected_types = st.multiselect(
+        "Record types",
+        record_types,
+        default=record_types,
+        key="advanced_search_types",
+    )
+
+    staff_df = df_query(conn, "SELECT user_id, username FROM users ORDER BY LOWER(username)")
+    staff_map = {
+        int(row["user_id"]): clean_text(row.get("username")) or f"User #{int(row['user_id'])}"
+        for _, row in staff_df.iterrows()
+    }
+    staff_choices = list(staff_map.keys())
+    staff_filter = st.multiselect(
+        "Staff filter",
+        staff_choices,
+        format_func=lambda uid: staff_map.get(uid, f"User #{uid}"),
+        key="advanced_search_staff",
+    )
+
+    start_iso = end_iso = None
+    if isinstance(date_window, (list, tuple)) and len(date_window) == 2:
+        start_iso = to_iso_date(date_window[0])
+        end_iso = to_iso_date(date_window[1])
+
+    results: list[dict[str, object]] = []
+
+    def _apply_date_filter(df: pd.DataFrame, column: str) -> pd.DataFrame:
+        if df.empty or column not in df.columns or not start_iso or not end_iso:
+            return df
+        df[column] = pd.to_datetime(df[column], errors="coerce")
+        start_dt = pd.to_datetime(start_iso)
+        end_dt = pd.to_datetime(end_iso) + pd.Timedelta(days=1)
+        return df[(df[column] >= start_dt) & (df[column] < end_dt)]
+
+    def _append_results(df: pd.DataFrame, type_label: str, date_col: str, build_details):
+        if df.empty:
+            return
+        filtered = _apply_date_filter(df, date_col)
+        for row in filtered.to_dict("records"):
+            staff_id = int(row.get("created_by")) if row.get("created_by") is not None else None
+            if staff_filter and staff_id not in staff_filter:
+                continue
+            details = build_details(row)
+            search_blob = " ".join(str(val) for val in details.values() if val)
+            results.append(
+                {
+                    "Type": type_label,
+                    "Title": details.get("title"),
+                    "Details": details.get("details"),
+                    "Date": details.get("date"),
+                    "Staff": staff_map.get(staff_id),
+                    "Amount": details.get("amount"),
+                    "Status": details.get("status"),
+                    "Attachment": details.get("attachment"),
+                    "_search": search_blob.lower(),
+                }
+            )
+
+    if "Quotations" in selected_types:
+        quotes_df = df_query(
+            conn,
+            dedent(
+                """
+                SELECT q.quotation_id,
+                       q.reference,
+                       q.customer_company,
+                       q.quote_date,
+                       q.total_amount,
+                       q.status,
+                       q.document_path,
+                       q.created_by,
+                       q.salesperson_name,
+                       u.username
+                FROM quotations q
+                LEFT JOIN users u ON u.user_id = q.created_by
+                ORDER BY datetime(q.quote_date) DESC, q.quotation_id DESC
+                LIMIT 200
+                """
+            ),
+        )
+        if not quotes_df.empty:
+            if min_amount > 0:
+                quotes_df = quotes_df[quotes_df["total_amount"].apply(lambda v: _coerce_float(v, 0.0) >= min_amount)]
+            _append_results(
+                quotes_df,
+                "Quotation",
+                "quote_date",
+                lambda row: {
+                    "title": clean_text(row.get("reference")) or clean_text(row.get("customer_company")),
+                    "details": f"{clean_text(row.get('customer_company')) or '(customer)'} • {clean_text(row.get('salesperson_name')) or 'Sales'}",
+                    "date": row.get("quote_date"),
+                    "amount": _coerce_float(row.get("total_amount"), 0.0),
+                    "status": clean_text(row.get("status")),
+                    "attachment": clean_text(row.get("document_path")),
+                },
+            )
+
+    if "Services" in selected_types:
+        service_df = df_query(
+            conn,
+            """
+            SELECT service_id, description, service_start_date, service_end_date, service_product_info, status
+            FROM services
+            ORDER BY datetime(COALESCE(service_start_date, service_end_date)) DESC, service_id DESC
+            LIMIT 200
+            """,
+        )
+        _append_results(
+            service_df,
+            "Service",
+            "service_start_date",
+            lambda row: {
+                "title": clean_text(row.get("description")) or f"Service #{row.get('service_id')}",
+                "details": clean_text(row.get("service_product_info")),
+                "date": row.get("service_start_date") or row.get("service_end_date"),
+                "status": clean_text(row.get("status")),
+                "amount": None,
+                "attachment": None,
+            },
+        )
+
+    if "Maintenance" in selected_types:
+        maintenance_df = df_query(
+            conn,
+            """
+            SELECT maintenance_id, description, maintenance_start_date, maintenance_end_date, maintenance_product_info, status
+            FROM maintenance_records
+            ORDER BY datetime(COALESCE(maintenance_start_date, maintenance_end_date)) DESC, maintenance_id DESC
+            LIMIT 200
+            """,
+        )
+        _append_results(
+            maintenance_df,
+            "Maintenance",
+            "maintenance_start_date",
+            lambda row: {
+                "title": clean_text(row.get("description")) or f"Maintenance #{row.get('maintenance_id')}",
+                "details": clean_text(row.get("maintenance_product_info")),
+                "date": row.get("maintenance_start_date") or row.get("maintenance_end_date"),
+                "status": clean_text(row.get("status")),
+                "amount": None,
+                "attachment": None,
+            },
+        )
+
+    if "Delivery orders" in selected_types:
+        do_df = df_query(
+            conn,
+            """
+            SELECT do_number, description, sales_person, remarks, created_at
+            FROM delivery_orders
+            ORDER BY datetime(created_at) DESC
+            LIMIT 200
+            """,
+        )
+        _append_results(
+            do_df,
+            "Delivery order",
+            "created_at",
+            lambda row: {
+                "title": clean_text(row.get("do_number")),
+                "details": clean_text(row.get("description")) or clean_text(row.get("remarks")),
+                "date": row.get("created_at"),
+                "status": clean_text(row.get("sales_person")),
+                "amount": None,
+                "attachment": None,
+            },
+        )
+
+    if "Customers" in selected_types:
+        customer_df = df_query(
+            conn,
+            """
+            SELECT name, company_name, phone, address, created_at, created_by
+            FROM customers
+            ORDER BY datetime(created_at) DESC
+            LIMIT 200
+            """,
+        )
+        _append_results(
+            customer_df,
+            "Customer",
+            "created_at",
+            lambda row: {
+                "title": clean_text(row.get("name")) or clean_text(row.get("company_name")),
+                "details": clean_text(row.get("phone")) or clean_text(row.get("address")),
+                "date": row.get("created_at"),
+                "status": None,
+                "amount": None,
+                "attachment": None,
+            },
+        )
+
+    if not results:
+        st.info("No records found for the selected filters.")
+        return
+
+    results_df = pd.DataFrame(results)
+    if search_text:
+        needle = re.escape(search_text.lower())
+        results_df = results_df[results_df["_search"].str.contains(needle, regex=True, na=False)]
+
+    display_cols = ["Type", "Title", "Details", "Date", "Staff", "Amount", "Status", "Attachment"]
+    results_df = results_df.fillna("")
+    st.dataframe(results_df[display_cols], use_container_width=True, hide_index=True)
+
+    csv_bytes = results_df.drop(columns=["_search"], errors="ignore").to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download results",
+        data=csv_bytes,
+        file_name="advanced_search.csv",
+        mime="text/csv",
+        key="advanced_search_download",
+    )
+
+
 def _render_maintenance_section(conn, *, show_heading: bool = True):
     if show_heading:
         st.subheader("🔧 Maintenance Records")
@@ -6870,50 +7349,42 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
             )
         description = st.text_area("Maintenance description")
         remarks = st.text_area("Remarks / updates")
-        maintenance_product_count = st.number_input(
-            "Products sold during maintenance",
-            min_value=0,
-            max_value=20,
-            value=0,
-            step=1,
-            key="maintenance_additional_product_count",
-            help="Track any new items purchased while maintenance was carried out.",
-        )
-        maintenance_product_entries: list[dict[str, object]] = []
-        for idx in range(int(maintenance_product_count)):
-            cols = st.columns((2, 2, 2, 1))
-            with cols[0]:
-                product_name = st.text_input(
-                    f"Product {idx + 1} details",
-                    key=f"maintenance_product_name_{idx}",
-                )
-            with cols[1]:
-                product_model = st.text_input(
-                    f"Model {idx + 1}",
-                    key=f"maintenance_product_model_{idx}",
-                )
-            with cols[2]:
-                product_serial = st.text_input(
-                    f"Serial {idx + 1}",
-                    key=f"maintenance_product_serial_{idx}",
-                )
-            with cols[3]:
-                product_quantity = st.number_input(
-                    f"Qty {idx + 1}",
-                    min_value=1,
-                    max_value=999,
-                    value=1,
-                    step=1,
-                    key=f"maintenance_product_quantity_{idx}",
-                )
-            maintenance_product_entries.append(
+        st.markdown("**Products sold during maintenance**")
+        maintenance_rows = st.session_state.get(
+            "maintenance_product_rows",
+            [
                 {
-                    "name": product_name,
-                    "model": product_model,
-                    "serial": product_serial,
-                    "quantity": int(product_quantity),
+                    "name": "",
+                    "model": "",
+                    "serial": "",
+                    "quantity": 1,
                 }
-            )
+            ],
+        )
+        maintenance_editor = st.data_editor(
+            pd.DataFrame(maintenance_rows),
+            num_rows="dynamic",
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "name": st.column_config.TextColumn("Product", help="Name / description"),
+                "model": st.column_config.TextColumn("Model"),
+                "serial": st.column_config.TextColumn("Serial"),
+                "quantity": st.column_config.NumberColumn(
+                    "Qty",
+                    min_value=1,
+                    step=1,
+                    format="%d",
+                ),
+            },
+            key="maintenance_product_table",
+        )
+        maintenance_product_entries = (
+            maintenance_editor.to_dict("records")
+            if isinstance(maintenance_editor, pd.DataFrame)
+            else []
+        )
+        st.session_state["maintenance_product_rows"] = maintenance_product_entries
         maintenance_files = st.file_uploader(
             "Attach maintenance documents (PDF)",
             type=["pdf"],
@@ -7492,8 +7963,13 @@ def work_done_page(conn):
 
 def service_maintenance_page(conn):
     st.subheader("🛠️ Maintenance and Service")
-    st.markdown("### Service records")
-    _render_service_section(conn, show_heading=False)
+    tabs = st.tabs(["Service", "Maintenance"])
+    with tabs[0]:
+        st.markdown("### Service records")
+        _render_service_section(conn, show_heading=False)
+    with tabs[1]:
+        st.markdown("### Maintenance records")
+        _render_maintenance_section(conn, show_heading=False)
     st.markdown("---")
     st.info("Create new quotations from the dedicated 'Create Quotation' page in the sidebar.")
 
@@ -8795,7 +9271,10 @@ def duplicates_page(conn):
 def users_admin_page(conn):
     ensure_auth(role="admin")
     st.subheader("👤 Users (Admin)")
-    users = df_query(conn, "SELECT user_id as id, username, role, created_at FROM users ORDER BY datetime(created_at) DESC")
+    users = df_query(
+        conn,
+        "SELECT user_id as id, username, phone, title, role, created_at FROM users ORDER BY datetime(created_at) DESC",
+    )
     users = users.assign(created_at=pd.to_datetime(users["created_at"], errors="coerce").dt.strftime(DATE_FMT))
     st.dataframe(users.drop(columns=["id"], errors="ignore"))
 
@@ -8803,12 +9282,20 @@ def users_admin_page(conn):
         with st.form("add_user"):
             u = st.text_input("Username")
             p = st.text_input("Password", type="password")
+            phone = st.text_input("Phone number (required)")
+            title = st.text_input("Title / role", help="Shown on quotations by default")
             role = st.selectbox("Role", ["staff", "admin"])
             ok = st.form_submit_button("Create")
             if ok and u.strip() and p.strip():
+                if not phone.strip():
+                    st.error("Phone number is required for staff accounts.")
+                    return
                 h = hashlib.sha256(p.encode("utf-8")).hexdigest()
                 try:
-                    conn.execute("INSERT INTO users (username, pass_hash, role) VALUES (?, ?, ?)", (u.strip(), h, role))
+                    conn.execute(
+                        "INSERT INTO users (username, pass_hash, phone, title, role) VALUES (?, ?, ?, ?, ?)",
+                        (u.strip(), h, clean_text(phone), clean_text(title), role),
+                    )
                     conn.commit()
                     st.success("User added")
                 except sqlite3.IntegrityError:
@@ -10350,6 +10837,10 @@ def main():
     user = st.session_state.user or {}
     role = user.get("role")
     with st.sidebar:
+        st.markdown("### Navigation")
+        create_quote = st.button(
+            "🧾 Create Quotation", type="primary", use_container_width=True
+        )
         if role == "admin":
             pages = [
                 "Dashboard",
@@ -10361,6 +10852,7 @@ def main():
                 "Scraps",
                 "Warranties",
                 "Import",
+                "Advanced Search",
                 "Reports",
                 "Duplicates",
                 "Users (Admin)",
@@ -10379,10 +10871,18 @@ def main():
                 "Reports",
                 "Maintenance and Service",
             ]
-        if st.session_state.page not in pages:
-            st.session_state.page = pages[0]
-        current_index = pages.index(st.session_state.page)
-        page = st.radio("Navigate", pages, index=current_index, key="nav_page")
+        nav_pages = [page for page in pages if page != "Create Quotation"]
+        if not nav_pages:
+            nav_pages = pages
+        if st.session_state.get("nav_page") not in nav_pages:
+            st.session_state["nav_page"] = nav_pages[0]
+        current_index = nav_pages.index(st.session_state["nav_page"])
+        page_choice = st.radio(
+            "Navigate", nav_pages, index=current_index, key="nav_page"
+        )
+        page = page_choice
+        if create_quote or st.session_state.page == "Create Quotation":
+            page = "Create Quotation"
         st.session_state.page = page
 
     show_expiry_notifications(conn)
@@ -10405,6 +10905,8 @@ def main():
         warranties_page(conn)
     elif page == "Import":
         import_page(conn)
+    elif page == "Advanced Search":
+        advanced_search_page(conn)
     elif page == "Reports":
         reports_page(conn)
     elif page == "Duplicates":
