@@ -5821,12 +5821,29 @@ def _build_quotation_workbook(
     return buffer.read()
 
 
-def _load_letterhead_data_uri() -> Optional[str]:
-    candidates = [
-        Path("letterhead.png"),
-        Path("ps_letterhead.png"),
-        Path("letterhead"),
+def _load_letterhead_data_uri(template_choice: Optional[str] = None) -> Optional[str]:
+    base_dir = Path(__file__).resolve().parent
+    default_candidates = [
+        base_dir / "PS-SALES-main" / "ps_letterhead.png",
+        base_dir / "ps_letterhead.png",
+        base_dir / "letterhead.png",
+        base_dir / "letterhead",
     ]
+
+    preferred: list[Path] = []
+    if template_choice == "PS letterhead":
+        preferred = [base_dir / "PS-SALES-main" / "ps_letterhead.png", base_dir / "ps_letterhead.png"]
+    elif template_choice == "Default letterhead":
+        preferred = [base_dir / "letterhead.png", base_dir / "letterhead"]
+
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    for path in preferred + default_candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        candidates.append(path)
+
     for path in candidates:
         if not path.exists():
             continue
@@ -5844,8 +5861,12 @@ def _load_letterhead_data_uri() -> Optional[str]:
     return None
 
 
-def _render_letterhead_preview(metadata: dict[str, Optional[str]], grand_total: str) -> None:
-    data_uri = _load_letterhead_data_uri()
+def _render_letterhead_preview(
+    metadata: dict[str, Optional[str]],
+    grand_total: str,
+    template_choice: Optional[str] = None,
+) -> None:
+    data_uri = _load_letterhead_data_uri(template_choice)
     if not data_uri:
         return
 
@@ -6186,11 +6207,11 @@ def _render_quotation_section(conn):
         st.markdown("#### Product details")
         items_toolbar = st.columns(3)
         with items_toolbar[0]:
-            add_item = st.button("Add item", use_container_width=True)
+            add_item = st.form_submit_button("Add item", use_container_width=True)
         with items_toolbar[1]:
-            clear_items = st.button("Clear items", use_container_width=True)
+            clear_items = st.form_submit_button("Clear items", use_container_width=True)
         with items_toolbar[2]:
-            reset_items = st.button("Reset defaults", use_container_width=True)
+            reset_items = st.form_submit_button("Reset defaults", use_container_width=True)
         if add_item:
             st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
         if clear_items:
@@ -6438,6 +6459,7 @@ def _render_quotation_section(conn):
             "filename": filename,
             "record_id": record_id,
             "reminder_label": reminder_label,
+            "letter_template": template_choice,
         }
 
     result = st.session_state.get(result_key)
@@ -6461,7 +6483,12 @@ def _render_quotation_section(conn):
         if result.get("reminder_label"):
             st.caption(result.get("reminder_label"))
 
-        _render_letterhead_preview(result.get("metadata", {}), grand_total_label)
+        _render_letterhead_preview(
+            result.get("metadata", {}),
+            grand_total_label,
+            template_choice=result.get("letter_template")
+            or st.session_state.get("quotation_letter_template"),
+        )
 
         st.download_button(
             "Download quotation",
