@@ -21,6 +21,11 @@ import pandas as pd
 
 import streamlit as st
 from collections import OrderedDict
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Image as PdfImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 try:
     from storage_paths import get_storage_dir
@@ -665,20 +670,27 @@ def ensure_schema_upgrades(conn):
     add_column("services", "condition_remarks", "TEXT")
     add_column("services", "bill_amount", "REAL")
     add_column("services", "bill_document_path", "TEXT")
+    add_column("services", "created_by", "INTEGER")
     add_column("maintenance_records", "status", "TEXT DEFAULT 'In progress'")
     add_column("quotations", "payment_receipt_path", "TEXT")
     add_column("maintenance_records", "maintenance_start_date", "TEXT")
     add_column("maintenance_records", "maintenance_end_date", "TEXT")
     add_column("maintenance_records", "maintenance_product_info", "TEXT")
+    add_column("maintenance_records", "created_by", "INTEGER")
     add_column("quotations", "document_path", "TEXT")
     add_column("warranties", "remarks", "TEXT")
     add_column("delivery_orders", "remarks", "TEXT")
+    add_column("delivery_orders", "items_payload", "TEXT")
+    add_column("delivery_orders", "total_amount", "REAL")
+    add_column("delivery_orders", "created_by", "INTEGER")
     add_column("import_history", "amount_spent", "REAL")
     add_column("import_history", "imported_by", "INTEGER")
     add_column("import_history", "delivery_address", "TEXT")
     add_column("import_history", "quantity", "INTEGER DEFAULT 1")
     add_column("work_reports", "grid_payload", "TEXT")
     add_column("work_reports", "attachment_path", "TEXT")
+    add_column("service_documents", "uploaded_by", "INTEGER")
+    add_column("maintenance_documents", "uploaded_by", "INTEGER")
 
     # Remove stored email data for privacy; the app no longer collects it.
     if has_column("customers", "email"):
@@ -1113,6 +1125,69 @@ def push_runtime_notification(
     st.session_state[NOTIFICATION_BUFFER_KEY] = buffer
 
 
+def _build_staff_alerts(conn, *, user_id: Optional[int]) -> list[dict[str, object]]:
+    alerts: list[dict[str, object]] = []
+    if user_id is None:
+        return alerts
+
+    today_iso = date.today().isoformat()
+    follow_ups = df_query(
+        conn,
+        dedent(
+            """
+            SELECT reference, follow_up_date, reminder_label
+            FROM quotations
+            WHERE created_by = ?
+              AND follow_up_date IS NOT NULL
+              AND LOWER(IFNULL(status, 'pending')) <> 'paid'
+            ORDER BY date(follow_up_date) ASC
+            LIMIT 12
+            """
+        ),
+        (user_id,),
+    )
+    if not follow_ups.empty:
+        for _, row in follow_ups.iterrows():
+            follow_date_val = clean_text(row.get("follow_up_date"))
+            follow_dt = pd.to_datetime(follow_date_val, errors="coerce")
+            severity = "info"
+            if pd.notna(follow_dt) and follow_dt.date() <= date.today():
+                severity = "warning"
+            follow_label = format_period_range(follow_date_val, follow_date_val) or (follow_date_val or "(date pending)")
+            alerts.append(
+                {
+                    "title": clean_text(row.get("reference")) or "Quotation follow-up",
+                    "message": clean_text(row.get("reminder_label"))
+                    or f"Follow-up scheduled for {follow_label}",
+                    "severity": severity,
+                }
+            )
+
+    pending_report = df_query(
+        conn,
+        dedent(
+            """
+            SELECT 1 FROM work_reports
+            WHERE user_id=?
+              AND period_type='daily'
+              AND date(period_start)=date(?)
+            LIMIT 1
+            """
+        ),
+        (user_id, today_iso),
+    )
+    if pending_report.empty:
+        alerts.append(
+            {
+                "title": "Daily report due",
+                "message": f"Submit today's update ({format_period_range(today_iso, today_iso)}).",
+                "severity": "warning",
+            }
+        )
+
+    return alerts
+
+
 def log_activity(
     conn,
     *,
@@ -1127,6 +1202,11 @@ def log_activity(
     if not event_key and not description_text:
         return
     actor_id = user_id if user_id is not None else current_user_id()
+    actor_label = clean_text(get_current_user().get("username")) if get_current_user() else None
+    label = NOTIFICATION_EVENT_LABELS.get(
+        event_key, (event_key or "Activity").replace("_", " ").title()
+    )
+    should_notify = event_key not in {"login", "logout"}
     try:
         conn.execute(
             """
@@ -1145,6 +1225,20 @@ def log_activity(
     except sqlite3.Error:
         with contextlib.suppress(Exception):
             conn.rollback()
+    else:
+        if should_notify:
+            message = description_text or description or label or "Activity logged"
+            details: list[str] = []
+            if entity_type and entity_id:
+                details.append(
+                    f"{clean_text(entity_type).title()} #{entity_id}" if clean_text(entity_type) else f"Record #{entity_id}"
+                )
+            push_runtime_notification(
+                label or "Activity logged",
+                f"{actor_label or 'Team member'}: {message}",
+                severity="info",
+                details=details,
+            )
 
 
 def fetch_activity_feed(conn, limit: int = ACTIVITY_FEED_LIMIT) -> list[dict[str, object]]:
@@ -1663,6 +1757,76 @@ def _default_quotation_items() -> list[dict[str, object]]:
     ]
 
 
+def _default_delivery_items() -> list[dict[str, object]]:
+    return [
+        {
+            "description": "",
+            "quantity": 1.0,
+            "unit_price": 0.0,
+            "discount": 0.0,
+        }
+    ]
+
+
+def normalize_delivery_items(rows: Iterable[dict[str, object]]) -> tuple[list[dict[str, object]], float]:
+    normalized: list[dict[str, object]] = []
+    total_amount = 0.0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        description = clean_text(row.get("description"))
+        if not description:
+            continue
+        quantity = _coerce_float(row.get("quantity"), 1.0)
+        if quantity < 0:
+            quantity = 0.0
+        unit_price = _coerce_float(row.get("unit_price"), 0.0)
+        if unit_price < 0:
+            unit_price = 0.0
+        discount = _coerce_float(row.get("discount"), 0.0)
+        if discount < 0:
+            discount = 0.0
+        if discount > 100:
+            discount = 100.0
+        line_total = quantity * unit_price * (1 - (discount / 100))
+        total_amount += line_total
+        normalized.append(
+            {
+                "description": description,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "discount": discount,
+                "line_total": line_total,
+            }
+        )
+    return normalized, total_amount
+
+
+def parse_delivery_items_payload(value: Optional[str]) -> list[dict[str, object]]:
+    text = clean_text(value)
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return []
+    rows: list[dict[str, object]] = []
+    if isinstance(parsed, list):
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                continue
+            rows.append(
+                {
+                    "description": clean_text(entry.get("description")) or "",
+                    "quantity": _coerce_float(entry.get("quantity"), 1.0),
+                    "unit_price": _coerce_float(entry.get("unit_price"), 0.0),
+                    "discount": _coerce_float(entry.get("discount"), 0.0),
+                    "line_total": _coerce_float(entry.get("line_total"), 0.0),
+                }
+            )
+    return rows
+
+
 def _reset_quotation_form_state() -> None:
     default_items = _default_quotation_items()
     st.session_state["quotation_item_rows"] = default_items
@@ -2016,6 +2180,12 @@ def attach_documents(
     if not files:
         return 0
     saved = 0
+    try:
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    except Exception:
+        cols = set()
+    include_uploader = "uploaded_by" in cols
+    uploader_id = current_user_id()
     for idx, uploaded in enumerate(files, start=1):
         if uploaded is None:
             continue
@@ -2025,10 +2195,16 @@ def attach_documents(
         stored_path = store_uploaded_pdf(uploaded, target_dir, filename=filename)
         if not stored_path:
             continue
-        conn.execute(
-            f"INSERT INTO {table} ({fk_column}, file_path, original_name) VALUES (?, ?, ?)",
-            (int(record_id), stored_path, safe_original),
-        )
+        if include_uploader:
+            conn.execute(
+                f"INSERT INTO {table} ({fk_column}, file_path, original_name, uploaded_by) VALUES (?, ?, ?, ?)",
+                (int(record_id), stored_path, safe_original, uploader_id),
+            )
+        else:
+            conn.execute(
+                f"INSERT INTO {table} ({fk_column}, file_path, original_name) VALUES (?, ?, ?)",
+                (int(record_id), stored_path, safe_original),
+            )
         saved += 1
     return saved
 
@@ -3408,8 +3584,13 @@ def dashboard(conn):
                         except OSError:
                             payload = None
                         if payload:
+                            mime = "application/pdf" if file_path.suffix.lower() == ".pdf" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                             cols[3].download_button(
-                                "Download", payload, file_name=file_path.name, key=download_key
+                                "Download PDF" if file_path.suffix.lower() == ".pdf" else "Download",
+                                payload,
+                                file_name=file_path.name,
+                                key=download_key,
+                                mime=mime,
                             )
                         else:
                             cols[3].caption("File unavailable")
@@ -4220,14 +4401,25 @@ def _render_notification_body(
 
 
 def render_notification_bell(conn) -> None:
-    if not current_user_is_admin():
+    user = get_current_user()
+    if not user:
         return
+
+    is_admin = user.get("role") == "admin"
     alerts = list(reversed(get_runtime_notifications()))
-    activity = fetch_activity_feed(conn, limit=ACTIVITY_FEED_LIMIT)
+    user_id = current_user_id()
+    alerts.extend(_build_staff_alerts(conn, user_id=user_id))
+    activity = fetch_activity_feed(conn, limit=ACTIVITY_FEED_LIMIT) if is_admin else []
+
     total = len(alerts) + len(activity)
     label = "🔔" if total == 0 else f"🔔 {total}"
     container = st.container()
     with container:
+        for alert in alerts:
+            if alert.get("severity") in {"warning", "error", "danger"}:
+                toast_msg = alert.get("message") or alert.get("title")
+                if toast_msg:
+                    st.toast(toast_msg, icon="⚠️")
         st.markdown("<div class='ps-notification-popover'>", unsafe_allow_html=True)
         popover = getattr(st, "popover", None)
         if callable(popover):
@@ -4694,10 +4886,13 @@ def customers_page(conn):
                 )
                 bulk_delete_submit = st.form_submit_button(
                     "Delete selected customers",
-                    disabled=not selected_delete_ids,
+                    disabled=(not is_admin) or (not selected_delete_ids),
                     type="secondary",
                 )
             if bulk_delete_submit and selected_delete_ids:
+                if not is_admin:
+                    st.error("Only admins can delete customer records.")
+                    return
                 deleted_count = 0
                 for cid in selected_delete_ids:
                     try:
@@ -5545,8 +5740,9 @@ def _render_service_section(conn, *, show_heading: bool = True):
                     condition_remarks,
                     bill_amount,
                     bill_document_path,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    updated_at,
+                    created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     selected_do,
@@ -5563,6 +5759,7 @@ def _render_service_section(conn, *, show_heading: bool = True):
                     bill_amount_value,
                     None,
                     datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                    current_user_id(),
                 ),
             )
             service_id = cur.lastrowid
@@ -6023,6 +6220,199 @@ def _build_quotation_workbook(
     return buffer.read()
 
 
+def _resolve_letterhead_path(template_choice: Optional[str] = None) -> Optional[Path]:
+    template_choice = template_choice or "PS letterhead"
+    base_dir = Path(__file__).resolve().parent
+    default_candidates = [
+        base_dir / "PS-SALES-main" / "ps_letterhead.png",
+        base_dir / "ps_letterhead.png",
+        base_dir / "letterhead.png",
+        base_dir / "letterhead",
+    ]
+
+    preferred: list[Path] = []
+    if template_choice == "PS letterhead":
+        preferred = [base_dir / "PS-SALES-main" / "ps_letterhead.png", base_dir / "ps_letterhead.png"]
+    elif template_choice == "Default letterhead":
+        preferred = [base_dir / "letterhead.png", base_dir / "letterhead"]
+
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    for path in preferred + default_candidates:
+        if path in seen:
+            continue
+        seen.add(path)
+        candidates.append(path)
+
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
+
+def _build_quotation_pdf(
+    *,
+    metadata: dict[str, Optional[str]],
+    items: list[dict[str, object]],
+    totals: dict[str, float],
+    grand_total_label: str,
+    template_choice: Optional[str] = None,
+) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=20 * mm,
+        rightMargin=20 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+    )
+    styles = getSampleStyleSheet()
+    styles.add(
+        ParagraphStyle(
+            name="Muted",
+            parent=styles["Normal"],
+            textColor=colors.HexColor("#475569"),
+            fontSize=10,
+        )
+    )
+    subject = metadata.get("Subject") or metadata.get("Subject / scope") or "Quotation"
+    reference = metadata.get("Reference number") or metadata.get("Quotation reference") or "—"
+    date_value = metadata.get("Date") or "—"
+    customer_name = metadata.get("Customer company") or metadata.get("Customer / organisation") or "—"
+    customer_contact = metadata.get("Customer contact name") or metadata.get("Customer contact") or "—"
+    customer_address = metadata.get("Customer address") or ""
+    attention_name = metadata.get("Attention name") or "—"
+    attention_title = metadata.get("Attention title") or ""
+    prepared_by = metadata.get("Salesperson name") or "—"
+    prepared_title = metadata.get("Salesperson title") or ""
+    prepared_contact = metadata.get("Salesperson contact") or ""
+
+    story: list[object] = []
+    letterhead_path = _resolve_letterhead_path(template_choice)
+    if letterhead_path and letterhead_path.exists():
+        try:
+            img = PdfImage(str(letterhead_path))
+            aspect = img.imageHeight / float(img.imageWidth)
+            img.drawHeight = 38 * mm
+            img.drawWidth = img.drawHeight / aspect
+            if img.drawWidth > doc.width:
+                img.drawWidth = doc.width
+                img.drawHeight = doc.width * aspect
+            story.append(img)
+            story.append(Spacer(1, 8))
+        except Exception:
+            pass
+
+    story.append(Paragraph(subject, styles["Title"]))
+    story.append(Paragraph(f"Ref: {reference}", styles["Muted"]))
+    story.append(Paragraph(f"Date: {date_value}", styles["Muted"]))
+    story.append(Spacer(1, 10))
+
+    meta_rows = [
+        ("Customer", customer_name),
+        ("Contact", customer_contact),
+        ("Address", customer_address or "—"),
+        ("Attention", " ".join(part for part in [attention_name, attention_title] if part) or "—"),
+        (
+            "Prepared by",
+            " ".join(part for part in [prepared_by, prepared_title, prepared_contact] if part) or "—",
+        ),
+        ("Grand total", grand_total_label),
+    ]
+    meta_table = Table(meta_rows, colWidths=[doc.width * 0.28, doc.width * 0.72])
+    meta_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.whitesmoke),
+                ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#0f172a")),
+                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+                ("FONTSIZE", (0, 0), (-1, -1), 10),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cbd5e1")),
+                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+            ]
+        )
+    )
+    story.append(meta_table)
+    story.append(Spacer(1, 12))
+
+    if items:
+        pricing_header = ["Description", "Qty", "Rate", "Discount", "Line total"]
+        pricing_rows = [pricing_header]
+        for entry in items:
+            desc = entry.get("description") or entry.get("Description") or "—"
+            qty_value = entry.get("quantity") if "quantity" in entry else entry.get("Quantity")
+            rate_value = entry.get("unit_price") if "unit_price" in entry else entry.get("Rate")
+            discount_value = entry.get("discount") if "discount" in entry else entry.get("Discount (%)")
+            line_total_value = entry.get("line_total") if "line_total" in entry else entry.get("Line total")
+            pricing_rows.append(
+                [
+                    desc,
+                    f"{_coerce_float(qty_value, 0.0):,.2f}",
+                    format_money(rate_value) or f"{_coerce_float(rate_value, 0.0):,.2f}",
+                    f"{_coerce_float(discount_value, 0.0):.1f}%",
+                    format_money(line_total_value) or f"{_coerce_float(line_total_value, 0.0):,.2f}",
+                ]
+            )
+        table = Table(pricing_rows, colWidths=[doc.width * 0.38, doc.width * 0.12, doc.width * 0.16, doc.width * 0.14, doc.width * 0.2])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, 0), 10),
+                    ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                    ("BACKGROUND", (0, 1), (-1, -1), colors.whitesmoke),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.HexColor("#f8fafc")]),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cbd5e1")),
+                ]
+            )
+        )
+        story.append(table)
+        story.append(Spacer(1, 10))
+
+    totals_rows = []
+    if totals:
+        totals_rows = [
+            ("Gross", totals.get("gross_total")),
+            ("Discounts", totals.get("discount_total")),
+            ("Taxes", (totals.get("cgst_total", 0.0) + totals.get("sgst_total", 0.0) + totals.get("igst_total", 0.0))),
+            ("Grand total", totals.get("grand_total")),
+        ]
+    if totals_rows:
+        totals_table = Table(
+            [
+                [label, format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"]
+                for label, value in totals_rows
+                if value is not None
+            ],
+            colWidths=[doc.width * 0.5, doc.width * 0.5],
+        )
+        totals_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#0f172a")),
+                    ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+                    ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 11),
+                    ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ]
+            )
+        )
+        story.append(totals_table)
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.read()
+
+
 def _load_letterhead_data_uri(template_choice: Optional[str] = None) -> Optional[str]:
     template_choice = template_choice or "PS letterhead"
     base_dir = Path(__file__).resolve().parent
@@ -6068,10 +6458,18 @@ def _render_letterhead_preview(
     metadata: dict[str, Optional[str]],
     grand_total: str,
     template_choice: Optional[str] = None,
+    items: Optional[list[dict[str, object]]] = None,
+    totals: Optional[dict[str, float]] = None,
 ) -> None:
     data_uri = _load_letterhead_data_uri(template_choice)
     if not data_uri:
         return
+
+    def _format_currency(value: object) -> str:
+        return format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
+
+    items = items or []
+    totals = totals or {}
 
     subject = html.escape(
         metadata.get("Subject")
@@ -6099,7 +6497,6 @@ def _render_letterhead_preview(
         metadata.get("Closing / thanks")
         or metadata.get("Closing", "")
     )
-    follow_up = html.escape(metadata.get("Follow-up date", ""))
     project = html.escape(metadata.get("Customer district", ""))
     date_value = html.escape(metadata.get("Date", ""))
     prepared_by = html.escape(metadata.get("Salesperson name", ""))
@@ -6107,6 +6504,60 @@ def _render_letterhead_preview(
     prepared_contact = html.escape(metadata.get("Salesperson contact", ""))
     attention_name = html.escape(metadata.get("Attention name", ""))
     attention_title = html.escape(metadata.get("Attention title", ""))
+
+    pricing_rows = ""
+    if items:
+        line_items = items[:6]
+        pricing_cells = []
+        for item in line_items:
+            title = html.escape(clean_text(item.get("Description")) or "Item")
+            specs = html.escape(clean_text(item.get("Specs")) or "")
+            qty = _coerce_float(item.get("Quantity"), 0.0)
+            qty_display = f"{int(qty)}" if math.isclose(qty, round(qty)) else f"{qty:,.2f}"
+            amount_display = _format_currency(item.get("Line total"))
+            rate_display = _format_currency(item.get("Rate"))
+            detail_line = f"{qty_display} × {rate_display}" if rate_display else qty_display
+            pricing_cells.append(
+                f"""
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 12px; background: #f8fafc;">
+                  <div>
+                    <div style="font-weight: 650; color: #0f172a;">{title}</div>
+                    <div style="color: #475569; font-size: 13px; margin-top: 2px;">{specs}</div>
+                    <div style="color: #64748b; font-size: 12px; margin-top: 6px;">{detail_line}</div>
+                  </div>
+                  <div style="text-align: right; min-width: 120px;">
+                    <div style="font-size: 14px; color: #475569;">Line total</div>
+                    <div style="font-size: 17px; font-weight: 800; color: #0f172a;">{amount_display}</div>
+                  </div>
+                </div>
+                """
+            )
+        pricing_rows = "".join(pricing_cells)
+
+    totals_rows = []
+    if totals:
+        totals_rows = [
+            ("Gross", totals.get("gross_total")),
+            ("Discounts", totals.get("discount_total")),
+            ("Taxes", (totals.get("cgst_total", 0.0) + totals.get("sgst_total", 0.0) + totals.get("igst_total", 0.0))),
+            ("Grand total", totals.get("grand_total")),
+        ]
+    totals_html = ""
+    if totals_rows:
+        rows_markup = "".join(
+            f"<div style='display:flex; justify-content:space-between; padding:6px 0; color:#0f172a;'>"
+            f"<span style='color:#475569;'>{html.escape(label)}</span>"
+            f"<strong>{_format_currency(value)}</strong>"
+            f"</div>"
+            for label, value in totals_rows
+            if value is not None
+        )
+        totals_html = f"""
+        <div style="margin-top: 12px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff;">
+          <div style="font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Pricing summary</div>
+          {rows_markup}
+        </div>
+        """
 
     preview_html = f"""
     <div style="margin-top: 1rem; border: 1px solid #e5e7eb; border-radius: 14px; overflow: hidden;">
@@ -6137,8 +6588,6 @@ def _render_letterhead_preview(
               <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Attention</div>
               <div style="margin-top: 6px; font-weight: 600; color: #0f172a;">{attention_name or '—'}</div>
               <div style="margin-top: 2px; color: #475569; font-size: 13px;">{attention_title or ''}</div>
-              <div style="margin-top: 8px; font-size: 12px; color: #64748b;">Follow-up</div>
-              <div style="color: #0f172a; margin-top: 2px;">{follow_up or '—'}</div>
             </div>
             <div style="padding: 12px; background: #f8fafc; border-radius: 10px;">
               <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Prepared by</div>
@@ -6151,6 +6600,15 @@ def _render_letterhead_preview(
             <div style="margin-bottom: 6px; font-weight: 600;">{salutation}</div>
             <div>{intro or '—'}</div>
             <div style="margin-top: 12px; font-weight: 600;">{closing or ''}</div>
+          </div>
+          <div style="margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px;">
+            <div>
+              <div style="font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Pricing</div>
+              <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
+                {pricing_rows or '<div style="color:#94a3b8;">Add items above to see pricing on the letterhead.</div>'}
+              </div>
+            </div>
+            {totals_html}
           </div>
         </div>
       </div>
@@ -6219,22 +6677,22 @@ def _save_quotation_record(conn, payload: dict) -> Optional[int]:
     return int(cur.lastrowid)
 
 
-def _persist_quotation_document(
-    record_id: int, workbook_bytes: bytes, reference: Optional[str]
+def _persist_quotation_pdf(
+    record_id: int, pdf_bytes: bytes, reference: Optional[str]
 ) -> Optional[str]:
-    if not workbook_bytes or record_id is None:
+    if not pdf_bytes or record_id is None:
         return None
     ensure_upload_dirs()
     safe_ref = re.sub(r"[^a-zA-Z0-9_-]+", "-", clean_text(reference) or "").strip("-")
     safe_ref = safe_ref or "quotation"
-    dest = QUOTATION_RECEIPT_DIR / f"quotation_{record_id}_{safe_ref}.xlsx"
+    dest = QUOTATION_RECEIPT_DIR / f"quotation_{record_id}_{safe_ref}.pdf"
     counter = 1
     while dest.exists():
-        dest = QUOTATION_RECEIPT_DIR / f"quotation_{record_id}_{safe_ref}_{counter}.xlsx"
+        dest = QUOTATION_RECEIPT_DIR / f"quotation_{record_id}_{safe_ref}_{counter}.pdf"
         counter += 1
     try:
         with open(dest, "wb") as fh:
-            fh.write(workbook_bytes)
+            fh.write(pdf_bytes)
         return str(dest.relative_to(BASE_DIR))
     except (OSError, ValueError):
         return None
@@ -6610,14 +7068,10 @@ def _render_quotation_section(conn):
             if not st.session_state.get("quotation_customer_district"):
                 st.session_state["quotation_customer_district"] = clean_text(seed.get("district")) or ""
 
-    _, preview_totals = normalize_quotation_items(
+    preview_items, preview_totals = normalize_quotation_items(
         st.session_state.get("quotation_item_rows", [])
     )
     preview_grand_total = format_money(preview_totals.get("grand_total")) or f"{_coerce_float(preview_totals.get('grand_total'), 0.0):,.2f}"
-    preview_follow_up = format_period_range(
-        to_iso_date(st.session_state.get("quotation_follow_up_date")),
-        to_iso_date(st.session_state.get("quotation_follow_up_date")),
-    )
     preview_metadata = {
         "Reference number": st.session_state.get("quotation_reference"),
         "Date": st.session_state.get("quotation_date", default_date).strftime(DATE_FMT)
@@ -6631,7 +7085,6 @@ def _render_quotation_section(conn):
         "Subject": st.session_state.get("quotation_subject"),
         "Introduction": st.session_state.get("quotation_introduction"),
         "Closing": st.session_state.get("quotation_closing"),
-        "Follow-up date": preview_follow_up,
         "Salutation": st.session_state.get("quotation_salutation"),
         "Quotation reference": st.session_state.get("quotation_reference"),
         "Subject / scope": st.session_state.get("quotation_subject"),
@@ -6654,7 +7107,6 @@ def _render_quotation_section(conn):
                 ("Customer", preview_metadata.get("Customer company") or ""),
                 ("Contact", preview_metadata.get("Customer contact") or ""),
                 ("Reference", preview_metadata.get("Reference number") or ""),
-                ("Follow-up", preview_follow_up or ""),
                 (
                     "Prepared by",
                     " ".join(
@@ -6677,6 +7129,8 @@ def _render_quotation_section(conn):
             preview_metadata,
             preview_grand_total,
             template_choice=st.session_state.get("quotation_letter_template"),
+            items=preview_items,
+            totals=preview_totals,
         )
 
     if submit:
@@ -6754,6 +7208,13 @@ def _render_quotation_section(conn):
             items=workbook_items,
             totals=totals_rows,
         )
+        pdf_bytes = _build_quotation_pdf(
+            metadata=metadata,
+            items=items_clean,
+            totals=totals_data,
+            grand_total_label=format_money(grand_total_value) or f"{grand_total_value:,.2f}",
+            template_choice=template_choice,
+        )
 
         display_df = pd.DataFrame(workbook_items)
 
@@ -6817,8 +7278,8 @@ def _render_quotation_section(conn):
         record_id = _save_quotation_record(conn, payload)
         document_path = None
         if record_id:
-            document_path = _persist_quotation_document(
-                record_id, workbook_bytes, reference_value
+            document_path = _persist_quotation_pdf(
+                record_id, pdf_bytes, reference_value
             )
             if document_path:
                 try:
@@ -6830,10 +7291,11 @@ def _render_quotation_section(conn):
                 except sqlite3.Error:
                     document_path = None
             summary_label = reference_value or f"Quotation #{record_id}"
+            formatted_total = format_money(grand_total_value) or f"{_coerce_float(grand_total_value, 0.0):,.2f}"
             log_activity(
                 conn,
                 event_type="quotation_created",
-                description=f"{prepared_by or 'Sales'} logged {summary_label} ({format_money(grand_total_value) or grand_total_value:,.2f})",
+                description=f"{prepared_by or 'Sales'} logged {summary_label} ({formatted_total})",
                 entity_type="quotation",
                 entity_id=int(record_id),
             )
@@ -6853,16 +7315,24 @@ def _render_quotation_section(conn):
             "metadata": metadata,
             "excel_bytes": workbook_bytes,
             "filename": filename,
+            "pdf_bytes": pdf_bytes,
             "record_id": record_id,
             "reminder_label": reminder_label,
             "letter_template": template_choice,
             "payment_receipt_path": receipt_path,
             "document_path": document_path,
+            "items": items_clean,
+            "totals": totals_data,
+            "follow_up": {
+                "status": follow_up_status,
+                "notes": follow_up_notes,
+                "date": follow_up_label,
+            },
         }
 
     result = st.session_state.get(result_key)
     if result:
-        st.success("Quotation ready. Review the details below or download the Excel file.")
+        st.success("Quotation ready. Review the details below or download the PDF and Excel copies.")
         metadata_df = pd.DataFrame(result["metadata_items"], columns=["Field", "Value"])
         grand_total_label = format_money(result["grand_total"]) or f"{result['grand_total']:,.2f}"
 
@@ -6885,6 +7355,16 @@ def _render_quotation_section(conn):
             if result.get("reminder_label"):
                 st.caption(result.get("reminder_label"))
 
+            follow_up_block = result.get("follow_up") or {}
+            if any(follow_up_block.values()):
+                st.markdown("###### Follow-up plan (internal)")
+                follow_rows = [
+                    ("Status", clean_text(follow_up_block.get("status")) or "—"),
+                    ("Target date", follow_up_block.get("date") or "—"),
+                    ("Notes", clean_text(follow_up_block.get("notes")) or "—"),
+                ]
+                st.table(pd.DataFrame(follow_rows, columns=["Field", "Value"]))
+
             receipt_path = result.get("payment_receipt_path")
             if receipt_path:
                 receipt_file = BASE_DIR / receipt_path
@@ -6898,8 +7378,17 @@ def _render_quotation_section(conn):
                             key="quotation_receipt_download",
                         )
 
+            if result.get("pdf_bytes"):
+                st.download_button(
+                    "Download PDF (letterhead)",
+                    data=result["pdf_bytes"],
+                    file_name=f"{Path(result['filename']).stem}.pdf",
+                    mime="application/pdf",
+                    key="quotation_pdf_download",
+                )
+
             st.download_button(
-                "Download quotation",
+                "Download Excel copy",
                 data=result["excel_bytes"],
                 file_name=result["filename"],
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -6915,13 +7404,13 @@ def _render_quotation_section(conn):
                     except OSError:
                         saved_bytes = None
                     if saved_bytes:
-                        st.download_button(
-                            "Download saved copy",
+                            st.download_button(
+                            "Download saved PDF copy",
                             data=saved_bytes,
                             file_name=saved_doc.name,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            mime="application/pdf",
                             key="quotation_saved_download",
-                        )
+                            )
 
         with summary_cols[1]:
             _render_letterhead_preview(
@@ -6929,6 +7418,8 @@ def _render_quotation_section(conn):
                 grand_total_label,
                 template_choice=result.get("letter_template")
                 or st.session_state.get("quotation_letter_template"),
+                items=result.get("items"),
+                totals=result.get("totals"),
             )
 
 
@@ -7178,7 +7669,7 @@ def advanced_search_page(conn):
         do_df = df_query(
             conn,
             """
-            SELECT do_number, description, sales_person, remarks, created_at
+            SELECT do_number, description, sales_person, remarks, created_at, created_by, total_amount
             FROM delivery_orders
             ORDER BY datetime(created_at) DESC
             LIMIT 200
@@ -7193,7 +7684,7 @@ def advanced_search_page(conn):
                 "details": clean_text(row.get("description")) or clean_text(row.get("remarks")),
                 "date": row.get("created_at"),
                 "status": clean_text(row.get("sales_person")),
-                "amount": None,
+                "amount": format_money(row.get("total_amount")) or row.get("total_amount"),
                 "attachment": None,
             },
         )
@@ -7439,8 +7930,9 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
                     status,
                     remarks,
                     maintenance_product_info,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    updated_at,
+                    created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     selected_do,
@@ -7453,6 +7945,7 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
                     clean_text(remarks),
                     maintenance_product_label,
                     datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                    current_user_id(),
                 ),
             )
             maintenance_id = cur.lastrowid
@@ -7751,16 +8244,133 @@ def delivery_orders_page(conn, *, show_heading: bool = True):
     if show_heading:
         st.subheader("🚚 Delivery orders")
 
+    st.session_state.setdefault("delivery_order_items_rows", _default_delivery_items())
+    st.session_state.setdefault("delivery_order_number", "")
+    st.session_state.setdefault("delivery_order_customer", None)
+    st.session_state.setdefault("delivery_order_description", "")
+    st.session_state.setdefault("delivery_order_sales_person", "")
+    st.session_state.setdefault("delivery_order_remarks", "")
+
     customer_options, customer_labels, _, _ = fetch_customer_choices(conn)
+    existing_dos = df_query(
+        conn,
+        dedent(
+            """
+            SELECT d.do_number,
+                   d.customer_id,
+                   COALESCE(c.name, c.company_name, '(unknown)') AS customer,
+                   d.description,
+                   d.sales_person,
+                   d.remarks,
+                   d.file_path,
+                   d.items_payload,
+                   d.total_amount,
+                   d.created_by,
+                   d.created_at,
+                   u.username
+            FROM delivery_orders d
+            LEFT JOIN customers c ON c.customer_id = d.customer_id
+            LEFT JOIN users u ON u.user_id = d.created_by
+            ORDER BY datetime(d.created_at) DESC
+            LIMIT 200
+            """
+        ),
+    )
+    load_labels: dict[Optional[str], str] = {None: "-- New delivery order --"}
+    load_choices = [None]
+    if not existing_dos.empty:
+        for _, row in existing_dos.iterrows():
+            do_num = clean_text(row.get("do_number"))
+            if not do_num:
+                continue
+            customer_name = clean_text(row.get("customer")) or "(customer)"
+            load_choices.append(do_num)
+            load_labels[do_num] = f"{do_num} • {customer_name}"
+
     st.markdown("### Create or update a delivery order")
+    selected_existing = st.selectbox(
+        "Load existing delivery order",
+        load_choices,
+        format_func=lambda val: load_labels.get(val, "-- New delivery order --"),
+        key="do_form_loader",
+    )
+
+    if selected_existing:
+        match = existing_dos[existing_dos["do_number"] == selected_existing]
+        if not match.empty:
+            row = match.iloc[0]
+            st.session_state["delivery_order_number"] = clean_text(row.get("do_number")) or ""
+            cust_id = row.get("customer_id")
+            st.session_state["delivery_order_customer"] = int(cust_id) if pd.notna(cust_id) else None
+            st.session_state["delivery_order_description"] = clean_text(row.get("description")) or ""
+            st.session_state["delivery_order_sales_person"] = clean_text(row.get("sales_person")) or ""
+            st.session_state["delivery_order_remarks"] = clean_text(row.get("remarks")) or ""
+            loaded_items = parse_delivery_items_payload(row.get("items_payload"))
+            st.session_state["delivery_order_items_rows"] = loaded_items or _default_delivery_items()
+
     with st.form("delivery_order_form"):
-        do_number = st.text_input("Delivery order number *")
-        selected_customer = st.selectbox(
-            "Customer", customer_options, format_func=lambda cid: customer_labels.get(cid, "-- Select customer --")
+        do_number = st.text_input(
+            "Delivery order number *",
+            value=st.session_state.get("delivery_order_number", ""),
+            key="delivery_order_number",
         )
-        description = st.text_area("Description / items")
-        sales_person = st.text_input("Sales person / owner")
-        remarks = st.text_area("Remarks")
+        selected_customer = st.selectbox(
+            "Customer",
+            customer_options,
+            format_func=lambda cid: customer_labels.get(cid, "-- Select customer --"),
+            key="delivery_order_customer",
+        )
+        description = st.text_area(
+            "Description / items",
+            value=st.session_state.get("delivery_order_description", ""),
+            key="delivery_order_description",
+        )
+        sales_person = st.text_input(
+            "Sales person / owner",
+            value=st.session_state.get("delivery_order_sales_person", ""),
+            key="delivery_order_sales_person",
+        )
+        remarks = st.text_area(
+            "Remarks",
+            value=st.session_state.get("delivery_order_remarks", ""),
+            key="delivery_order_remarks",
+        )
+        st.markdown("**Products / items**")
+        items_df_seed = pd.DataFrame(
+            st.session_state.get("delivery_order_items_rows", _default_delivery_items())
+        )
+        if "line_total" in items_df_seed.columns:
+            items_df_seed = items_df_seed.drop(columns=["line_total"], errors="ignore")
+        items_editor = st.data_editor(
+            items_df_seed,
+            num_rows="dynamic",
+            hide_index=True,
+            use_container_width=True,
+            key="delivery_order_items_editor",
+            column_config={
+                "description": st.column_config.TextColumn(
+                    "Description", help="What is being delivered / sold"
+                ),
+                "quantity": st.column_config.NumberColumn(
+                    "Qty", min_value=0.0, step=1.0, format="%.2f"
+                ),
+                "unit_price": st.column_config.NumberColumn(
+                    "Unit price", min_value=0.0, step=50.0, format="%.2f"
+                ),
+                "discount": st.column_config.NumberColumn(
+                    "Discount (%)", min_value=0.0, max_value=100.0, step=0.5, format="%.2f"
+                ),
+            },
+        )
+        st.session_state["delivery_order_items_rows"] = (
+            items_editor.to_dict("records") if isinstance(items_editor, pd.DataFrame) else []
+        )
+        items_clean, estimated_total = normalize_delivery_items(
+            st.session_state.get("delivery_order_items_rows", [])
+        )
+        st.caption(
+            f"Estimated total: {format_money(estimated_total) or f'{estimated_total:,.2f}'}"
+        )
         do_file = st.file_uploader(
             "Attach delivery order (PDF)",
             type=["pdf"],
@@ -7776,7 +8386,7 @@ def delivery_orders_page(conn, *, show_heading: bool = True):
             cur = conn.cursor()
             existing = df_query(
                 conn,
-                "SELECT file_path FROM delivery_orders WHERE do_number = ?",
+                "SELECT file_path, items_payload, total_amount, created_by FROM delivery_orders WHERE do_number = ?",
                 (cleaned_number,),
             )
             stored_path = None
@@ -7788,11 +8398,19 @@ def delivery_orders_page(conn, *, show_heading: bool = True):
                     DELIVERY_ORDER_DIR,
                     filename=f"do_{_sanitize_path_component(cleaned_number)}.pdf",
                 )
+            items_clean, total_amount_value = normalize_delivery_items(
+                st.session_state.get("delivery_order_items_rows", [])
+            )
+            if not items_clean:
+                st.error("Add at least one product line with pricing to save the delivery order.")
+                return
+            items_payload = json.dumps(items_clean, ensure_ascii=False)
+            creator_id = current_user_id()
             if existing.empty:
                 cur.execute(
                     """
-                    INSERT INTO delivery_orders (do_number, customer_id, description, sales_person, remarks, file_path)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO delivery_orders (do_number, customer_id, description, sales_person, remarks, file_path, items_payload, total_amount, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         cleaned_number,
@@ -7801,13 +8419,17 @@ def delivery_orders_page(conn, *, show_heading: bool = True):
                         clean_text(sales_person),
                         clean_text(remarks),
                         stored_path,
+                        items_payload,
+                        total_amount_value,
+                        creator_id,
                     ),
                 )
             else:
+                existing_creator = existing.iloc[0].get("created_by")
                 cur.execute(
                     """
                     UPDATE delivery_orders
-                       SET customer_id=?, description=?, sales_person=?, remarks=?, file_path=?
+                       SET customer_id=?, description=?, sales_person=?, remarks=?, file_path=?, items_payload=?, total_amount=?, created_by=COALESCE(created_by, ?)
                      WHERE do_number=?
                     """,
                     (
@@ -7816,6 +8438,9 @@ def delivery_orders_page(conn, *, show_heading: bool = True):
                         clean_text(sales_person),
                         clean_text(remarks),
                         stored_path,
+                        items_payload,
+                        total_amount_value,
+                        creator_id,
                         cleaned_number,
                     ),
                 )
@@ -7859,9 +8484,14 @@ def delivery_orders_page(conn, *, show_heading: bool = True):
                d.sales_person,
                d.remarks,
                d.created_at,
-               d.file_path
+               d.file_path,
+               d.total_amount,
+               d.items_payload,
+               d.created_by,
+               COALESCE(u.username, '(user)') AS created_by_name
           FROM delivery_orders d
           LEFT JOIN customers c ON c.customer_id = d.customer_id
+          LEFT JOIN users u ON u.user_id = d.created_by
          ORDER BY datetime(d.created_at) DESC
         """,
     )
@@ -7905,6 +8535,18 @@ def delivery_orders_page(conn, *, show_heading: bool = True):
                     )
                 ]
         do_df["Document"] = do_df["file_path"].apply(lambda fp: "📎" if clean_text(fp) else "")
+        if "total_amount" in do_df.columns:
+            def _format_total_value(value: object) -> str:
+                if value is None:
+                    return ""
+                try:
+                    if pd.isna(value):
+                        return ""
+                except Exception:
+                    pass
+                return format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
+
+            do_df["total_amount"] = do_df["total_amount"].apply(_format_total_value)
 
     st.dataframe(
         do_df.rename(
@@ -7916,8 +8558,10 @@ def delivery_orders_page(conn, *, show_heading: bool = True):
                 "remarks": "Remarks",
                 "created_at": "Created",
                 "Document": "Attachment",
+                "total_amount": "Total",
+                "created_by_name": "Created by",
             }
-        ).drop(columns=["customer_id", "file_path"], errors="ignore"),
+        ).drop(columns=["customer_id", "file_path", "items_payload", "created_by"], errors="ignore"),
         use_container_width=True,
     )
 
@@ -8815,15 +9459,12 @@ def import_page(conn):
             "phone": pick(sel_phone),
             "product": pick(sel_prod),
             "do_code": pick(sel_do_code),
-            "do_code_alt": pick(sel_do),
             "remarks": pick(sel_remarks),
             "amount_spent": pick(sel_amount),
             "quantity": pick(sel_quantity),
         }
     )
-    df_norm["do_code"] = df_norm["do_code_alt"].combine_first(df_norm["do_code"])
     df_norm["quantity"] = df_norm["quantity"].apply(parse_quantity)
-    df_norm.drop(columns=["do_code_alt"], inplace=True, errors="ignore")
     skip_blanks = st.checkbox("Skip blank rows", value=True)
     df_norm = refine_multiline(df_norm)
     df_norm["date"] = coerce_excel_date(df_norm["date"])
