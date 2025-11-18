@@ -1,4 +1,6 @@
 import contextlib
+import base64
+import html
 import io
 import json
 import math
@@ -41,7 +43,7 @@ BASE_DIR = Path(os.getenv("APP_STORAGE_DIR", DEFAULT_BASE_DIR))
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "ps_crm.db"))
 DATE_FMT = "%d-%m-%Y"
-CURRENCY_SYMBOL = os.getenv("APP_CURRENCY_SYMBOL", "₹")
+CURRENCY_SYMBOL = os.getenv("APP_CURRENCY_SYMBOL", "৳")
 
 UPLOADS_DIR = BASE_DIR / "uploads"
 DELIVERY_ORDER_DIR = UPLOADS_DIR / "delivery_orders"
@@ -458,10 +460,12 @@ CREATE TABLE IF NOT EXISTS import_history (
     original_date TEXT,
     customer_name TEXT,
     address TEXT,
+    delivery_address TEXT,
     phone TEXT,
     product_label TEXT,
     notes TEXT,
     amount_spent REAL,
+    quantity INTEGER DEFAULT 1,
     imported_by INTEGER,
     deleted_at TEXT,
     FOREIGN KEY(customer_id) REFERENCES customers(customer_id) ON DELETE SET NULL,
@@ -568,6 +572,8 @@ def ensure_schema_upgrades(conn):
     add_column("delivery_orders", "remarks", "TEXT")
     add_column("import_history", "amount_spent", "REAL")
     add_column("import_history", "imported_by", "INTEGER")
+    add_column("import_history", "delivery_address", "TEXT")
+    add_column("import_history", "quantity", "INTEGER DEFAULT 1")
     add_column("work_reports", "grid_payload", "TEXT")
     add_column("work_reports", "attachment_path", "TEXT")
 
@@ -1164,6 +1170,22 @@ def parse_amount(value) -> Optional[float]:
     return round(amount, 2)
 
 
+def parse_quantity(value, *, default: int = 1) -> int:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        value = value.replace(",", "").strip()
+        if not value:
+            return default
+    try:
+        qty = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(qty) or qty <= 0:
+        return default
+    return max(1, int(round(qty)))
+
+
 def format_period_label(period_type: str) -> str:
     if not period_type:
         return "Unknown"
@@ -1544,13 +1566,11 @@ def _default_quotation_items() -> list[dict[str, object]]:
 def _reset_quotation_form_state() -> None:
     default_items = _default_quotation_items()
     st.session_state["quotation_item_rows"] = default_items
-    st.session_state["quotation_items_table"] = pd.DataFrame(default_items)
     for key in [
         "quotation_reference",
         "quotation_date",
         "quotation_prepared_by",
         "quotation_valid_days",
-        "quotation_round_total",
         "quotation_company_name",
         "quotation_company_details",
         "quotation_customer_name",
@@ -2992,6 +3012,55 @@ def dashboard(conn):
     else:
         st.info("Staff view: focus on upcoming activities below. Metrics are available to admins only.")
 
+    report_scope = ""
+    report_params: tuple[object, ...] = ()
+    viewer_id = current_user_id()
+    if not is_admin:
+        if viewer_id is not None:
+            report_scope = "WHERE wr.user_id = ?"
+            report_params = (viewer_id,)
+        else:
+            report_scope = "WHERE 1=0"
+
+    recent_reports = df_query(
+        conn,
+        dedent(
+            f"""
+            SELECT wr.report_id,
+                   wr.period_type,
+                   wr.period_start,
+                   wr.period_end,
+                   wr.created_at,
+                   COALESCE(u.username, 'User #' || wr.user_id) AS owner
+            FROM work_reports wr
+            LEFT JOIN users u ON u.user_id = wr.user_id
+            {report_scope}
+            ORDER BY datetime(wr.created_at) DESC, wr.report_id DESC
+            LIMIT 6
+            """
+        ),
+        report_params,
+    )
+
+    if not recent_reports.empty:
+        st.markdown("#### Recent report submissions")
+        recent_reports["Period"] = recent_reports.apply(
+            lambda row: format_period_range(row.get("period_start"), row.get("period_end")),
+            axis=1,
+        )
+        recent_reports["Cadence"] = recent_reports["period_type"].apply(
+            lambda val: REPORT_PERIOD_OPTIONS.get(clean_text(val) or "", str(val).title())
+        )
+        recent_reports["When"] = recent_reports["created_at"].apply(
+            lambda value: format_time_ago(value) or format_period_range(value, value)
+        )
+        display_cols = ["owner", "Cadence", "Period", "When"]
+        st.dataframe(
+            recent_reports.rename(columns={"owner": "Team member"})[display_cols],
+            use_container_width=True,
+            hide_index=True,
+        )
+
     month_expired_current, month_expired_previous = month_bucket_counts(
         conn,
         "warranties",
@@ -4350,11 +4419,12 @@ def customers_page(conn):
                             (old_do, cid),
                         )
                     conn.execute(
-                        "UPDATE import_history SET customer_name=?, phone=?, address=?, product_label=?, do_number=?, original_date=? WHERE customer_id=? AND deleted_at IS NULL",
+                        "UPDATE import_history SET customer_name=?, phone=?, address=?, delivery_address=?, product_label=?, do_number=?, original_date=? WHERE customer_id=? AND deleted_at IS NULL",
                         (
                             new_name,
                             new_phone,
                             new_address,
+                            new_delivery_address,
                             product_label,
                             new_do,
                             purchase_str,
@@ -4547,11 +4617,12 @@ def customers_page(conn):
                         (old_do, int(selected_customer_id)),
                     )
                 conn.execute(
-                    "UPDATE import_history SET customer_name=?, phone=?, address=?, product_label=?, do_number=?, original_date=? WHERE customer_id=? AND deleted_at IS NULL",
+                    "UPDATE import_history SET customer_name=?, phone=?, address=?, delivery_address=?, product_label=?, do_number=?, original_date=? WHERE customer_id=? AND deleted_at IS NULL",
                     (
                         new_name,
                         new_phone,
                         new_address,
+                        new_delivery_address,
                         product_label,
                         new_do,
                         purchase_str,
@@ -5551,6 +5622,81 @@ def _build_quotation_workbook(
     return buffer.read()
 
 
+def _load_letterhead_data_uri() -> Optional[str]:
+    candidates = [
+        Path("letterhead.png"),
+        Path("ps_letterhead.png"),
+        Path("letterhead"),
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            raw = path.read_bytes()
+            mime = "image/png"
+            if path.suffix.lower() in {".jpg", ".jpeg"}:
+                mime = "image/jpeg"
+            elif path.suffix.lower() in {".webp"}:
+                mime = "image/webp"
+            encoded = base64.b64encode(raw).decode("utf-8")
+            return f"data:{mime};base64,{encoded}"
+        except Exception:
+            continue
+    return None
+
+
+def _render_letterhead_preview(metadata: dict[str, Optional[str]], grand_total: str) -> None:
+    data_uri = _load_letterhead_data_uri()
+    if not data_uri:
+        return
+
+    subject = html.escape(metadata.get("Subject / scope", "Quotation"))
+    customer = html.escape(metadata.get("Customer / organisation", ""))
+    reference = html.escape(metadata.get("Quotation reference", ""))
+    project = html.escape(metadata.get("Project / site", ""))
+    scope = html.escape(metadata.get("Scope / notes", ""))
+    terms = html.escape(metadata.get("Terms & conditions", ""))
+
+    preview_html = f"""
+    <div style="margin-top: 1rem; border: 1px solid #e5e7eb; border-radius: 14px; overflow: hidden;">
+      <div style="position: relative; min-height: 780px; background: url('{data_uri}') no-repeat center top / cover; padding: 180px 64px 120px 64px; color: #0f172a; font-family: 'Inter', sans-serif;">
+        <div style="background: rgba(255, 255, 255, 0.88); padding: 24px; border-radius: 12px; max-width: 840px; box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+            <div>
+              <div style="font-size: 22px; font-weight: 700; color: #0f172a;">{subject}</div>
+              <div style="margin-top: 6px; color: #475569; font-size: 14px;">Ref: {reference or '—'}</div>
+              <div style="margin-top: 2px; color: #475569; font-size: 14px;">Project: {project or '—'}</div>
+            </div>
+            <div style="text-align: right;">
+              <div style="color: #475569; font-size: 13px;">Grand total</div>
+              <div style="font-size: 20px; font-weight: 800; color: #0f172a;">{grand_total}</div>
+            </div>
+          </div>
+          <hr style="margin: 18px 0; border: none; border-top: 1px solid #e2e8f0;" />
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px;">
+            <div style="padding: 12px; background: #f8fafc; border-radius: 10px;">
+              <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Customer</div>
+              <div style="margin-top: 6px; font-weight: 600; color: #0f172a;">{customer or '—'}</div>
+            </div>
+            <div style="padding: 12px; background: #f8fafc; border-radius: 10px;">
+              <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Reference</div>
+              <div style="margin-top: 6px; font-weight: 600; color: #0f172a;">{reference or '—'}</div>
+            </div>
+          </div>
+          <div style="margin-top: 16px; padding: 12px 14px; background: #f8fafc; border-radius: 10px;">
+            <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Scope</div>
+            <div style="margin-top: 6px; color: #0f172a; line-height: 1.5;">{scope or '—'}</div>
+          </div>
+          {f"<div style='margin-top: 10px; padding: 12px 14px; background: #f8fafc; border-radius: 10px;'><div style='font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;'>Terms</div><div style='margin-top: 6px; color: #0f172a; line-height: 1.5;'>{terms}</div></div>" if terms else ""}
+        </div>
+      </div>
+    </div>
+    """
+
+    st.markdown("##### Letterhead preview", help="Your quotation details overlaid on the provided letterhead.")
+    st.markdown(preview_html, unsafe_allow_html=True)
+
+
 def _render_quotation_section():
     st.subheader("🧾 Create quotation")
 
@@ -5590,12 +5736,6 @@ def _render_quotation_section():
                 step=1,
                 format="%d",
                 key="quotation_valid_days",
-            )
-            round_total = st.checkbox(
-                "Round grand total to nearest rupee",
-                value=False,
-                help="If enabled the final amount will be rounded to the nearest rupee.",
-                key="quotation_round_total",
             )
 
         company_name = st.text_input("Company / branch", key="quotation_company_name")
@@ -5772,7 +5912,6 @@ def _render_quotation_section():
         )
         item_records = edited_items.to_dict("records")
         st.session_state["quotation_item_rows"] = item_records
-        st.session_state["quotation_items_table"] = edited_items
 
         action_cols = st.columns((1, 1))
         submit = action_cols[0].form_submit_button("Create quotation", type="primary")
@@ -5839,12 +5978,7 @@ def _render_quotation_section():
         if terms_clean:
             metadata["Terms & conditions"] = terms_clean
 
-        grand_total_before_round = totals_data["grand_total"]
-        rounded_grand_total = grand_total_before_round
-        round_off_value = 0.0
-        if round_total:
-            rounded_grand_total = float(round(grand_total_before_round))
-            round_off_value = rounded_grand_total - grand_total_before_round
+        grand_total_value = totals_data["grand_total"]
 
         totals_rows: list[tuple[str, float]] = []
         totals_rows.append(("Gross amount", totals_data["gross_total"]))
@@ -5857,11 +5991,7 @@ def _render_quotation_section():
             totals_rows.append(("SGST total", totals_data["sgst_total"]))
         if totals_data["igst_total"]:
             totals_rows.append(("IGST total", totals_data["igst_total"]))
-        if round_total:
-            totals_rows.append(("Grand total (before round)", grand_total_before_round))
-        if round_off_value:
-            totals_rows.append(("Round off", round_off_value))
-        totals_rows.append(("Grand total", rounded_grand_total))
+        totals_rows.append(("Grand total", grand_total_value))
 
         workbook_items = [item.copy() for item in items_clean]
 
@@ -5914,9 +6044,7 @@ def _render_quotation_section():
             "totals_rows": totals_rows,
             "gross_total": totals_data["gross_total"],
             "taxable_total": totals_data["taxable_total"],
-            "grand_total": rounded_grand_total,
-            "grand_total_before_round": grand_total_before_round,
-            "round_off": round_off_value,
+            "grand_total": grand_total_value,
             "metadata": metadata,
             "excel_bytes": workbook_bytes,
             "filename": filename,
@@ -5940,14 +6068,8 @@ def _render_quotation_section():
 
         grand_total_label = format_money(result["grand_total"]) or f"{result['grand_total']:,.2f}"
         st.markdown(f"**Grand total:** {grand_total_label}")
-        round_off_value = result.get("round_off", 0.0)
-        if round_off_value:
-            round_off_label = format_money(round_off_value) or f"{round_off_value:,.2f}"
-            original_total = result.get("grand_total_before_round", result["grand_total"])
-            original_label = format_money(original_total) or f"{original_total:,.2f}"
-            st.caption(
-                f"Rounded from {original_label} (round off {round_off_label})."
-            )
+
+        _render_letterhead_preview(result.get("metadata", {}), grand_total_label)
 
         st.download_button(
             "Download quotation",
@@ -6468,8 +6590,9 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
         st.info("No maintenance records yet. Log one using the form above.")
 
 
-def delivery_orders_page(conn):
-    st.subheader("🚚 Delivery orders")
+def delivery_orders_page(conn, *, show_heading: bool = True):
+    if show_heading:
+        st.subheader("🚚 Delivery orders")
 
     customer_options, customer_labels, _, _ = fetch_customer_choices(conn)
     st.markdown("### Create or update a delivery order")
@@ -6674,7 +6797,9 @@ def quotation_page(conn):
 
 
 def work_done_page(conn):
-    reports_page(conn)
+    st.subheader("✅ Work done")
+    st.caption("Create, update, and download work completion slips just like delivery orders.")
+    delivery_orders_page(conn, show_heading=False)
 
 
 def service_maintenance_page(conn):
@@ -7267,10 +7392,11 @@ def scraps_page(conn):
             recalc_customer_duplicate_flag(conn, new_phone)
         conn.commit()
         conn.execute(
-            "UPDATE import_history SET customer_name=?, phone=?, address=?, product_label=?, do_number=?, original_date=? WHERE customer_id=? AND deleted_at IS NULL",
+            "UPDATE import_history SET customer_name=?, phone=?, address=?, delivery_address=?, product_label=?, do_number=?, original_date=? WHERE customer_id=? AND deleted_at IS NULL",
             (
                 new_name,
                 new_phone,
+                new_address,
                 new_address,
                 new_product,
                 new_do,
@@ -7363,9 +7489,11 @@ HEADER_MAP = {
     "date": {"date", "delivery_date", "issue_date", "order_date", "dt", "d_o", "d", "sale_date"},
     "customer_name": {"customer_name", "customer", "company", "company_name", "client", "party", "name"},
     "address": {"address", "addr", "street", "location"},
+    "delivery_address": {"delivery_address", "delivery_addr", "shipping_address", "ship_to", "delivery"},
     "phone": {"phone", "mobile", "contact", "contact_no", "phone_no", "phone_number", "cell", "whatsapp"},
     "product": {"product", "item", "generator", "model", "description"},
     "do_code": {"do_code", "delivery_order", "delivery_order_code", "delivery_order_no", "do", "d_o_code", "do_number"},
+    "quantity": {"quantity", "qty", "count", "units", "pcs", "pieces"},
     "remarks": {"remarks", "remark", "notes", "note", "comments", "comment"},
     "amount_spent": {"amount", "amount_spent", "value", "price", "invoice_amount", "total", "total_amount", "amt"},
 }
@@ -7378,7 +7506,16 @@ def map_headers_guess(cols):
             if cn in aliases and mapping[target] is None:
                 mapping[target] = i
                 break
-    default_order = ["date", "customer_name", "address", "phone", "product", "do_code"]
+    default_order = [
+        "date",
+        "customer_name",
+        "address",
+        "delivery_address",
+        "phone",
+        "product",
+        "do_code",
+        "quantity",
+    ]
     if cols_norm[: len(default_order)] == default_order:
         mapping = {field: idx for idx, field in enumerate(default_order)}
     return mapping
@@ -7472,6 +7609,7 @@ def import_page(conn):
     col4, col5 = st.columns(2)
     col6, col7 = st.columns(2)
     col8, col9 = st.columns(2)
+    col10, _ = st.columns(2)
     sel_date = col1.selectbox(
         "Date", options=opts, index=(guess["date"] + 1) if guess.get("date") is not None else 0
     )
@@ -7488,10 +7626,10 @@ def import_page(conn):
         "Product", options=opts, index=(guess["product"] + 1) if guess.get("product") is not None else 0
     )
     sel_do = col6.selectbox(
-        "Delivery order", options=opts, index=(guess["do_code"] + 1) if guess.get("do_code") is not None else 0
+        "Delivery address", options=opts, index=(guess["delivery_address"] + 1) if guess.get("delivery_address") is not None else 0
     )
     sel_do_code = col7.selectbox(
-        "DO Code (optional)", options=opts, index=0
+        "Delivery order code (optional)", options=opts, index=(guess["do_code"] + 1) if guess.get("do_code") is not None else 0
     )
     sel_remarks = col8.selectbox(
         "Remarks", options=opts, index=(guess.get("remarks", None) + 1) if guess.get("remarks") is not None else 0
@@ -7499,6 +7637,7 @@ def import_page(conn):
     sel_amount = col9.selectbox(
         "Amount spent", options=opts, index=(guess.get("amount_spent", None) + 1) if guess.get("amount_spent") is not None else 0
     )
+    sel_quantity = col10.selectbox("Quantity", options=opts, index=(guess.get("quantity", None) + 1) if guess.get("quantity") is not None else 0)
 
     def pick(col_name):
         return df[col_name] if col_name != "(blank)" else pd.Series([None] * len(df))
@@ -7508,15 +7647,18 @@ def import_page(conn):
             "date": pick(sel_date),
             "customer_name": pick(sel_name),
             "address": pick(sel_addr),
+            "delivery_address": pick(sel_do),
             "phone": pick(sel_phone),
             "product": pick(sel_prod),
-            "do_code": pick(sel_do),
-            "do_code_alt": pick(sel_do_code),
+            "do_code": pick(sel_do_code),
+            "do_code_alt": pick(sel_do),
             "remarks": pick(sel_remarks),
             "amount_spent": pick(sel_amount),
+            "quantity": pick(sel_quantity),
         }
     )
     df_norm["do_code"] = df_norm["do_code_alt"].combine_first(df_norm["do_code"])
+    df_norm["quantity"] = df_norm["quantity"].apply(parse_quantity)
     df_norm.drop(columns=["do_code_alt"], inplace=True, errors="ignore")
     skip_blanks = st.checkbox("Skip blank rows", value=True)
     df_norm = refine_multiline(df_norm)
@@ -7540,6 +7682,9 @@ def import_page(conn):
             "remarks": st.column_config.TextColumn("Remarks", required=False),
             "amount_spent": st.column_config.NumberColumn(
                 "Amount spent", min_value=0.0, step=0.01, format="%.2f", required=False
+            ),
+            "quantity": st.column_config.NumberColumn(
+                "Quantity", min_value=1, step=1, format="%d", required=False
             ),
         },
     )
@@ -8023,11 +8168,13 @@ def _import_clean6(conn, df, tag="Import"):
         d = r.get("date", pd.NaT)
         cust = clean_text(r.get("customer_name"))
         addr = clean_text(r.get("address"))
+        delivery_addr = clean_text(r.get("delivery_address"))
         phone = clean_text(r.get("phone"))
         product_label = clean_text(r.get("product"))
         do_serial = clean_text(r.get("do_code"))
         remarks_val = clean_text(r.get("remarks"))
         amount_value = parse_amount(r.get("amount_spent"))
+        quantity_value = parse_quantity(r.get("quantity"), default=1)
         if cust is None and phone is None and product_label is None:
             continue
         purchase_dt = parse_date_value(d)
@@ -8056,8 +8203,17 @@ def _import_clean6(conn, df, tag="Import"):
 
         dupc = 1 if exists_phone(phone, purchase_str, do_serial, product_label) else 0
         cur.execute(
-            "INSERT INTO customers (name, phone, address, remarks, amount_spent, created_by, dup_flag) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (cust, phone, addr, remarks_val, amount_value, created_by, dupc),
+            "INSERT INTO customers (name, phone, address, delivery_address, remarks, amount_spent, created_by, dup_flag) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                cust,
+                phone,
+                addr,
+                delivery_addr,
+                remarks_val,
+                amount_value,
+                created_by,
+                dupc,
+            ),
         )
         cid = cur.lastrowid
         if dupc:
@@ -8103,7 +8259,7 @@ def _import_clean6(conn, df, tag="Import"):
         oid = cur.lastrowid
         cur.execute(
             "INSERT INTO order_items (order_id, product_id, quantity) VALUES (?, ?, ?)",
-            (oid, pid, 1),
+            (oid, pid, quantity_value),
         )
         order_item_id = cur.lastrowid
 
@@ -8138,18 +8294,19 @@ def _import_clean6(conn, df, tag="Import"):
             )
         purchase_date = purchase_str or (base.strftime("%Y-%m-%d") if isinstance(base, pd.Timestamp) else None)
         cur.execute(
-            "UPDATE customers SET purchase_date=?, product_info=?, delivery_order_code=?, remarks=?, amount_spent=? WHERE customer_id=?",
+            "UPDATE customers SET purchase_date=?, product_info=?, delivery_order_code=?, remarks=?, amount_spent=?, delivery_address=? WHERE customer_id=?",
             (
                 purchase_date,
                 product_label,
                 do_serial,
                 remarks_val,
                 amount_value,
+                delivery_addr,
                 cid,
             ),
         )
         cur.execute(
-            "INSERT INTO import_history (customer_id, product_id, order_id, order_item_id, warranty_id, do_number, import_tag, original_date, customer_name, address, phone, product_label, notes, amount_spent, imported_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO import_history (customer_id, product_id, order_id, order_item_id, warranty_id, do_number, import_tag, original_date, customer_name, address, phone, product_label, notes, amount_spent, imported_by, delivery_address, quantity) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 cid,
                 pid,
@@ -8166,6 +8323,8 @@ def _import_clean6(conn, df, tag="Import"):
                 remarks_val,
                 amount_value,
                 created_by,
+                delivery_addr,
+                quantity_value,
             ),
         )
         seeded += 1
@@ -8194,20 +8353,23 @@ def update_import_entry(conn, record: dict, updates: dict) -> None:
     new_name = clean_text(updates.get("customer_name"))
     new_phone = clean_text(updates.get("phone"))
     new_address = clean_text(updates.get("address"))
+    new_delivery_address = clean_text(updates.get("delivery_address"))
     purchase_date_str, expiry_str = date_strings_from_input(updates.get("purchase_date"))
     product_label = clean_text(updates.get("product_label"))
     new_do = clean_text(updates.get("do_number"))
     new_remarks = clean_text(updates.get("remarks"))
     new_amount = parse_amount(updates.get("amount_spent"))
+    quantity_value = parse_quantity(updates.get("quantity"), default=1)
     product_name, product_model = split_product_label(product_label)
 
     if customer_id is not None:
         cur.execute(
-            "UPDATE customers SET name=?, phone=?, address=?, purchase_date=?, product_info=?, delivery_order_code=?, remarks=?, amount_spent=?, dup_flag=0 WHERE customer_id=?",
+            "UPDATE customers SET name=?, phone=?, address=?, delivery_address=?, purchase_date=?, product_info=?, delivery_order_code=?, remarks=?, amount_spent=?, dup_flag=0 WHERE customer_id=?",
             (
                 new_name,
                 new_phone,
                 new_address,
+                new_delivery_address,
                 purchase_date_str,
                 product_label,
                 new_do,
@@ -8224,16 +8386,16 @@ def update_import_entry(conn, record: dict, updates: dict) -> None:
         )
 
     if order_item_id is not None:
-            cur.execute(
-                "UPDATE order_items SET quantity=? WHERE order_item_id=?",
-                (1, order_item_id),
-            )
+        cur.execute(
+            "UPDATE order_items SET quantity=? WHERE order_item_id=?",
+            (quantity_value, order_item_id),
+        )
 
     if product_id is not None:
-            cur.execute(
-                "UPDATE products SET name=?, model=? WHERE product_id=?",
-                (product_name, product_model, product_id),
-            )
+        cur.execute(
+            "UPDATE products SET name=?, model=? WHERE product_id=?",
+            (product_name, product_model, product_id),
+        )
 
     if warranty_id is not None:
         cur.execute(
@@ -8270,20 +8432,22 @@ def update_import_entry(conn, record: dict, updates: dict) -> None:
             params.append(order_id)
         cur.execute(query, tuple(params))
 
-        cur.execute(
-            "UPDATE import_history SET original_date=?, customer_name=?, address=?, phone=?, product_label=?, do_number=?, notes=?, amount_spent=? WHERE import_id=?",
-            (
-                purchase_date_str,
-                new_name,
-                new_address,
-                new_phone,
-                product_label,
-                new_do,
-                new_remarks,
-                new_amount,
-                import_id,
-            ),
-        )
+    cur.execute(
+        "UPDATE import_history SET original_date=?, customer_name=?, address=?, delivery_address=?, phone=?, product_label=?, do_number=?, notes=?, amount_spent=?, quantity=? WHERE import_id=?",
+        (
+            purchase_date_str,
+            new_name,
+            new_address,
+            new_delivery_address,
+            new_phone,
+            product_label,
+            new_do,
+            new_remarks,
+            new_amount,
+            quantity_value,
+            import_id,
+        ),
+    )
     conn.commit()
 
     if old_phone and old_phone != new_phone:
@@ -8520,7 +8684,8 @@ def manage_import_history(conn):
         f"""
         SELECT ih.*, c.name AS live_customer_name, c.address AS live_address, c.phone AS live_phone,
                c.purchase_date AS live_purchase_date, c.product_info AS live_product_info,
-               c.delivery_order_code AS live_do_code, c.attachment_path AS live_attachment_path
+               c.delivery_order_code AS live_do_code, c.delivery_address AS live_delivery_address,
+               c.attachment_path AS live_attachment_path
         FROM import_history ih
         LEFT JOIN customers c ON c.customer_id = ih.customer_id
         WHERE {where_clause}
@@ -8539,8 +8704,10 @@ def manage_import_history(conn):
         "imported_at",
         "customer_name",
         "phone",
+        "delivery_address",
         "product_label",
         "do_number",
+        "quantity",
         "amount_spent",
     ]
     display = hist[display_cols].copy()
@@ -8552,8 +8719,10 @@ def manage_import_history(conn):
             "imported_at": "Imported",
             "customer_name": "Customer",
             "phone": "Phone",
+            "delivery_address": "Delivery address",
             "product_label": "Product",
             "do_number": "DO code",
+            "quantity": "Quantity",
             "amount_spent": "Amount spent",
         },
         inplace=True,
@@ -8576,6 +8745,11 @@ def manage_import_history(conn):
     current_name = clean_text(selected.get("live_customer_name")) or clean_text(selected.get("customer_name")) or ""
     current_phone = clean_text(selected.get("live_phone")) or clean_text(selected.get("phone")) or ""
     current_address = clean_text(selected.get("live_address")) or clean_text(selected.get("address")) or ""
+    current_delivery_address = (
+        clean_text(selected.get("live_delivery_address"))
+        or clean_text(selected.get("delivery_address"))
+        or ""
+    )
     current_product = clean_text(selected.get("live_product_info")) or clean_text(selected.get("product_label")) or ""
     current_do = clean_text(selected.get("live_do_code")) or clean_text(selected.get("do_number")) or ""
     purchase_seed = selected.get("live_purchase_date") or selected.get("original_date")
@@ -8585,6 +8759,7 @@ def manage_import_history(conn):
     amount_display = ""
     if amount_value is not None:
         amount_display = format_money(amount_value) or f"{amount_value:,.2f}"
+    current_quantity = parse_quantity(selected.get("quantity"), default=1)
 
     user = st.session_state.user or {}
     is_admin = user.get("role") == "admin"
@@ -8593,6 +8768,9 @@ def manage_import_history(conn):
         name_input = st.text_input("Customer name", value=current_name)
         phone_input = st.text_input("Phone", value=current_phone)
         address_input = st.text_area("Address", value=current_address)
+        delivery_address_input = st.text_area(
+            "Delivery address", value=current_delivery_address
+        )
         purchase_input = st.text_input("Purchase date (DD-MM-YYYY)", value=purchase_str)
         product_input = st.text_input("Product", value=current_product)
         do_input = st.text_input("Delivery order code", value=current_do)
@@ -8606,6 +8784,13 @@ def manage_import_history(conn):
             value=amount_display,
             help="Track how much was spent for this imported row.",
         )
+        quantity_input = st.number_input(
+            "Quantity",
+            min_value=1,
+            value=current_quantity,
+            step=1,
+            help="How many units were recorded on this import line.",
+        )
         col1, col2 = st.columns(2)
         save_btn = col1.form_submit_button("Save changes", type="primary")
         delete_btn = col2.form_submit_button("Delete import", disabled=not is_admin)
@@ -8618,11 +8803,13 @@ def manage_import_history(conn):
                 "customer_name": name_input,
                 "phone": phone_input,
                 "address": address_input,
+                "delivery_address": delivery_address_input,
                 "purchase_date": purchase_input,
                 "product_label": product_input,
                 "do_number": do_input,
                 "remarks": remarks_input,
                 "amount_spent": amount_input,
+                "quantity": quantity_input,
             },
         )
         conn.execute(
