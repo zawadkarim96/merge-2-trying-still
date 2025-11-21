@@ -10209,7 +10209,7 @@ def _import_clean6(conn, df, tag="Import"):
     df = refine_multiline(df)
     if "date" in df.columns:
         df["date"] = coerce_excel_date(df["date"])
-    df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+    df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
     sort_cols = [col for col in ["date", "customer_name", "phone", "do_code"] if col in df.columns]
     if not sort_cols:
         sort_cols = df.columns.tolist()
