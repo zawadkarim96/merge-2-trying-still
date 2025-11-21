@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 from textwrap import dedent
 import pandas as pd
 
+from openpyxl import load_workbook
+
 
 import streamlit as st
 from collections import OrderedDict
@@ -2774,7 +2776,6 @@ def export_database_to_excel(conn) -> bytes:
         ("Warranties", _build_warranties_export),
         ("Services", _build_services_export),
         ("Maintenance", _build_maintenance_export),
-        ("Quotations", _build_quotations_export),
     ]
 
     sheet_data: list[tuple[str, pd.DataFrame]] = []
@@ -3562,42 +3563,113 @@ def dashboard(conn):
         if not staff_quotes.empty:
             staff_quotes = fmt_dates(staff_quotes, ["quote_date"])
             st.markdown("#### Team quotations (downloadable)")
-            for _, row in staff_quotes.iterrows():
-                cols = st.columns((1.5, 1, 1, 1))
-                cols[0].markdown(
-                    f"**{clean_text(row.get('reference')) or 'Quotation'}**\n"
-                    f"{clean_text(row.get('customer_company')) or '(customer)'}"
+            with st.container():
+                st.markdown(
+                    "<div style='max-height: 320px; overflow-y: auto;'>",
+                    unsafe_allow_html=True,
                 )
-                cols[1].write(clean_text(row.get("salesperson_name")) or clean_text(row.get("username")) or "—")
-                total_value = format_money(row.get("total_amount")) or f"{_coerce_float(row.get('total_amount'), 0.0):,.2f}"
-                cols[2].write(
-                    f"{clean_text(row.get('status')).title() if row.get('status') else 'Pending'}\n"
-                    f"{row.get('quote_date')}\n{total_value}"
-                )
-                doc_path = clean_text(row.get("document_path"))
-                if doc_path:
-                    file_path = BASE_DIR / doc_path
+                for _, row in staff_quotes.iterrows():
+                    cols = st.columns((1.5, 1, 1, 1))
+                    cols[0].markdown(
+                        f"**{clean_text(row.get('reference')) or 'Quotation'}**\n"
+                        f"{clean_text(row.get('customer_company')) or '(customer)'}"
+                    )
+                    cols[1].write(
+                        clean_text(row.get("salesperson_name"))
+                        or clean_text(row.get("username"))
+                        or "—"
+                    )
+                    total_value = format_money(row.get("total_amount")) or f"{_coerce_float(row.get('total_amount'), 0.0):,.2f}"
+                    cols[2].write(
+                        f"{clean_text(row.get('status')).title() if row.get('status') else 'Pending'}\n"
+                        f"{row.get('quote_date')}\n{total_value}"
+                    )
+
                     download_key = f"dash_quote_{int(row.get('quotation_id'))}"
-                    if file_path.exists():
-                        try:
-                            payload = file_path.read_bytes()
-                        except OSError:
-                            payload = None
-                        if payload:
-                            mime = "application/pdf" if file_path.suffix.lower() == ".pdf" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            cols[3].download_button(
-                                "Download PDF" if file_path.suffix.lower() == ".pdf" else "Download",
-                                payload,
-                                file_name=file_path.name,
-                                key=download_key,
-                                mime=mime,
+                    doc_path = clean_text(row.get("document_path"))
+                    file_path = BASE_DIR / doc_path if doc_path else None
+
+                    # Prefer a PDF version for dashboard downloads; fall back to any
+                    # matching PDF file for the quotation ID if the stored path is
+                    # missing or points to a non-PDF asset. If only an Excel workbook
+                    # exists, regenerate the PDF from the workbook contents and persist
+                    # it for future downloads.
+                    pdf_candidate = None
+                    regenerated_bytes: Optional[bytes] = None
+                    if file_path and file_path.suffix.lower() != ".pdf":
+                        alt_pdf = file_path.with_suffix(".pdf")
+                        if alt_pdf.exists():
+                            pdf_candidate = alt_pdf
+                        elif file_path.exists():
+                            regenerated_bytes = _regenerate_quotation_pdf_from_workbook(
+                                file_path
                             )
-                        else:
-                            cols[3].caption("File unavailable")
+                    if pdf_candidate is None and regenerated_bytes is None:
+                        try:
+                            quote_id = int(row.get("quotation_id"))
+                        except Exception:
+                            quote_id = None
+                        if quote_id:
+                            for alt_path in QUOTATION_RECEIPT_DIR.glob(
+                                f"quotation_{quote_id}_*.pdf"
+                            ):
+                                pdf_candidate = alt_path
+                                break
+                    if pdf_candidate:
+                        file_path = pdf_candidate
+
+                    download_payload: Optional[bytes] = None
+                    download_name: Optional[str] = None
+
+                    if regenerated_bytes:
+                        try:
+                            quote_id = int(row.get("quotation_id"))
+                        except Exception:
+                            quote_id = None
+                        persisted_path = None
+                        if quote_id:
+                            persisted_path = _persist_quotation_pdf(
+                                quote_id,
+                                regenerated_bytes,
+                                clean_text(row.get("reference")),
+                            )
+                            if persisted_path:
+                                try:
+                                    conn.execute(
+                                        "UPDATE quotations SET document_path=? WHERE quotation_id=?",
+                                        (persisted_path, quote_id),
+                                    )
+                                    conn.commit()
+                                    file_path = BASE_DIR / persisted_path
+                                except sqlite3.Error:
+                                    pass
+                        download_payload = regenerated_bytes
+                        download_name = (
+                            file_path.name
+                            if file_path and file_path.exists()
+                            else f"{Path(doc_path).stem}.pdf" if doc_path else "quotation.pdf"
+                        )
+
+                    if download_payload is None and file_path and file_path.exists():
+                        try:
+                            download_payload = file_path.read_bytes()
+                        except OSError:
+                            download_payload = None
+                        download_name = file_path.name
+
+                    if download_payload:
+                        cols[3].download_button(
+                            "Download PDF" if download_name.endswith(".pdf") else "Download",
+                            download_payload,
+                            file_name=download_name,
+                            key=download_key,
+                            mime="application/pdf"
+                            if download_name.endswith(".pdf")
+                            else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
                     else:
                         cols[3].caption("File missing")
-                else:
-                    cols[3].caption("No file saved")
+                st.markdown("</div>", unsafe_allow_html=True)
 
     quote_scope, quote_params = _quotation_scope_filter()
     quote_clause = quote_scope.replace("WHERE", "WHERE", 1)
@@ -4875,10 +4947,12 @@ def customers_page(conn):
             delete_choices = sorted(
                 delete_labels.keys(), key=lambda cid: delete_labels[cid].lower()
             )
+            st.session_state.setdefault("bulk_delete_ids", [])
             with st.form("bulk_customer_delete"):
                 selected_delete_ids = st.multiselect(
                     "Select customers to delete",
                     delete_choices,
+                    key="bulk_delete_ids",
                     format_func=lambda cid: delete_labels.get(
                         int(cid), f"Customer #{cid}"
                     ),
@@ -6218,6 +6292,124 @@ def _build_quotation_workbook(
 
     buffer.seek(0)
     return buffer.read()
+
+
+def _regenerate_quotation_pdf_from_workbook(file_path: Path) -> Optional[bytes]:
+    """Recreate a quotation PDF from an archived Excel workbook.
+
+    Older records may only have the Excel workbook stored; this helper rebuilds
+    the PDF so dashboard downloads remain consistent.
+    """
+
+    if not file_path.exists():
+        return None
+
+    try:
+        workbook = load_workbook(filename=file_path, data_only=True)
+    except Exception:
+        return None
+
+    if "Quotation" not in workbook.sheetnames:
+        return None
+
+    ws = workbook["Quotation"]
+    rows = list(ws.iter_rows(values_only=True))
+
+    def _is_blank(row: tuple[object, ...]) -> bool:
+        return all(cell is None or str(cell).strip() == "" for cell in row)
+
+    metadata: dict[str, Optional[str]] = {}
+    items: list[dict[str, object]] = []
+    totals_rows: list[tuple[str, object]] = []
+
+    section = "summary"
+    header: list[str] = []
+    totals_header: list[str] = []
+
+    for row in rows:
+        if _is_blank(row):
+            if section == "summary":
+                section = "items_header"
+            elif section == "items":
+                section = "totals_header"
+            continue
+
+        if section == "summary":
+            key = clean_text(row[0]) if len(row) else None
+            value = clean_text(row[1]) if len(row) > 1 else None
+            if key:
+                metadata[key] = value
+            continue
+
+        if section == "items_header":
+            header = [clean_text(cell) or "" for cell in row if cell is not None]
+            section = "items"
+            continue
+
+        if section == "items":
+            if not header:
+                continue
+            item_values = list(row)
+            if all(cell is None for cell in item_values):
+                section = "totals_header"
+                continue
+            item: dict[str, object] = {}
+            for idx, col_name in enumerate(header):
+                if not col_name:
+                    continue
+                value = item_values[idx] if idx < len(item_values) else None
+                if isinstance(value, str):
+                    value = clean_text(value)
+                item[col_name] = value
+            if item:
+                items.append(item)
+            continue
+
+        if section == "totals_header":
+            totals_header = [clean_text(cell) or "" for cell in row if cell is not None]
+            section = "totals"
+            continue
+
+        if section == "totals":
+            if not totals_header:
+                continue
+            if all(cell is None for cell in row):
+                break
+            label = clean_text(row[0]) if len(row) else None
+            value = row[1] if len(row) > 1 else None
+            if label:
+                totals_rows.append((label, value))
+
+    def _total_from_label(label: str) -> Optional[float]:
+        for key, value in totals_rows:
+            if clean_text(key) == label:
+                return _coerce_float(value, 0.0)
+        return None
+
+    totals = {
+        "gross_total": _total_from_label("gross amount")
+        or sum(_coerce_float(item.get("Gross amount"), 0.0) for item in items),
+        "discount_total": _total_from_label("discount total")
+        or sum(_coerce_float(item.get("Discount amount"), 0.0) for item in items),
+        "taxable_total": sum(_coerce_float(item.get("Taxable value"), 0.0) for item in items),
+        "cgst_total": sum(_coerce_float(item.get("CGST amount"), 0.0) for item in items),
+        "sgst_total": sum(_coerce_float(item.get("SGST amount"), 0.0) for item in items),
+        "igst_total": sum(_coerce_float(item.get("IGST amount"), 0.0) for item in items),
+        "grand_total": _total_from_label("grand total")
+        or sum(_coerce_float(item.get("Line total"), 0.0) for item in items),
+    }
+
+    grand_total_label = format_money(totals["grand_total"]) or f"{totals['grand_total']:,.2f}"
+
+    try:
+        return _build_quotation_pdf(
+            metadata=metadata,
+            items=items,
+            totals=totals,
+            grand_total_label=grand_total_label,
+        )
+    except Exception:
+        return None
 
 
 def _resolve_letterhead_path(template_choice: Optional[str] = None) -> Optional[Path]:
