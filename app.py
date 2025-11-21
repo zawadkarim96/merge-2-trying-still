@@ -6452,6 +6452,8 @@ def _resolve_letterhead_path(template_choice: Optional[str] = None) -> Optional[
     return None
 
 
+
+
 def _build_quotation_pdf(
     *,
     metadata: dict[str, Optional[str]],
@@ -6478,17 +6480,29 @@ def _build_quotation_pdf(
             fontSize=10,
         )
     )
+    styles.add(
+        ParagraphStyle(
+            name="BodySmall",
+            parent=styles["Normal"],
+            fontSize=11,
+            leading=14,
+        )
+    )
+
     subject = metadata.get("Subject") or metadata.get("Subject / scope") or "Quotation"
     reference = metadata.get("Reference number") or metadata.get("Quotation reference") or "—"
     date_value = metadata.get("Date") or "—"
     customer_name = metadata.get("Customer company") or metadata.get("Customer / organisation") or "—"
     customer_contact = metadata.get("Customer contact name") or metadata.get("Customer contact") or "—"
     customer_address = metadata.get("Customer address") or ""
+    customer_district = metadata.get("Customer district") or ""
     attention_name = metadata.get("Attention name") or "—"
     attention_title = metadata.get("Attention title") or ""
     prepared_by = metadata.get("Salesperson name") or "—"
     prepared_title = metadata.get("Salesperson title") or ""
     prepared_contact = metadata.get("Salesperson contact") or ""
+    intro = metadata.get("Introduction") or "We thank you for your inquiry and are pleased to submit our best proposal as desired."
+    closing = metadata.get("Closing / thanks") or metadata.get("Closing") or "With Thanks & Kind Regards"
 
     story: list[object] = []
     letterhead_path = _resolve_letterhead_path(template_choice)
@@ -6518,160 +6532,127 @@ def _build_quotation_pdf(
         finally:
             canvas.restoreState()
 
-    story.append(Spacer(1, 6))
+    story.append(Spacer(1, 18))
 
-    story.append(Paragraph(subject, styles["Title"]))
-    story.append(Paragraph(f"Ref: {reference}", styles["Muted"]))
-    story.append(Paragraph(f"Date: {date_value}", styles["Muted"]))
-    story.append(Spacer(1, 10))
-
-    meta_rows = [
-        ("Customer", customer_name),
-        ("Contact", customer_contact),
-        ("Address", customer_address or "—"),
-        ("Attention", " ".join(part for part in [attention_name, attention_title] if part) or "—"),
-        (
-            "Prepared by",
-            " ".join(part for part in [prepared_by, prepared_title, prepared_contact] if part) or "—",
-        ),
-        ("Grand total", grand_total_label),
-    ]
-    meta_table = Table(meta_rows, colWidths=[doc.width * 0.28, doc.width * 0.72])
-    meta_table.setStyle(
+    header_table = Table(
+        [
+            ["", Paragraph(f"<b>Date:</b> {date_value}", styles["BodySmall"])],
+            ["", Paragraph(f"<b>Ref:</b> {reference}", styles["BodySmall"])],
+        ],
+        colWidths=[doc.width * 0.58, doc.width * 0.42],
+    )
+    header_table.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, -1), colors.whitesmoke),
-                ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#0f172a")),
-                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 10),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
-                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cbd5e1")),
-                ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
             ]
         )
     )
-    story.append(meta_table)
+    story.append(header_table)
+    story.append(Spacer(1, 10))
+
+    address_lines = [customer_name, customer_contact, customer_address, customer_district]
+    address_text = "<br/>".join(filter(None, address_lines)) or "—"
+    story.append(Paragraph("<b>To</b>", styles["BodySmall"]))
+    story.append(Paragraph(address_text, styles["BodySmall"]))
+    story.append(Spacer(1, 6))
+    story.append(
+        Paragraph(
+            f"<b>Attention:</b> {attention_name} {attention_title}",
+            styles["BodySmall"],
+        )
+    )
+    story.append(Spacer(1, 8))
+    story.append(Paragraph(f"<b>Subject:</b> {subject}", styles["BodySmall"]))
     story.append(Spacer(1, 12))
-
-    if items:
-        pricing_header = ["Description", "Qty", "Rate", "Discount", "Line total"]
-        pricing_rows = [pricing_header]
-        for entry in items:
-            desc = entry.get("description") or entry.get("Description") or "—"
-            qty_value = entry.get("quantity") if "quantity" in entry else entry.get("Quantity")
-            rate_value = entry.get("unit_price") if "unit_price" in entry else entry.get("Rate")
-            discount_value = entry.get("discount") if "discount" in entry else entry.get("Discount (%)")
-            line_total_value = entry.get("line_total") if "line_total" in entry else entry.get("Line total")
-            pricing_rows.append(
-                [
-                    desc,
-                    f"{_coerce_float(qty_value, 0.0):,.2f}",
-                    format_money(rate_value) or f"{_coerce_float(rate_value, 0.0):,.2f}",
-                    f"{_coerce_float(discount_value, 0.0):.1f}%",
-                    format_money(line_total_value) or f"{_coerce_float(line_total_value, 0.0):,.2f}",
-                ]
-            )
-        table = Table(pricing_rows, colWidths=[doc.width * 0.38, doc.width * 0.12, doc.width * 0.16, doc.width * 0.14, doc.width * 0.2])
-        table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, 0), 10),
-                    ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-                    ("BACKGROUND", (0, 1), (-1, -1), colors.whitesmoke),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.HexColor("#f8fafc")]),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#cbd5e1")),
-                ]
-            )
+    story.append(Paragraph(intro, styles["BodySmall"]))
+    story.append(Spacer(1, 12))
+    story.append(
+        Paragraph(
+            "<b>PRICE SCHEDULE</b>",
+            styles["BodySmall"],
         )
-        story.append(table)
-        story.append(Spacer(1, 10))
+    )
+    story.append(Spacer(1, 4))
 
-    totals_rows = []
-    if totals:
-        totals_rows = [
-            ("Gross", totals.get("gross_total")),
-            ("Discounts", totals.get("discount_total")),
-            ("Taxes", (totals.get("cgst_total", 0.0) + totals.get("sgst_total", 0.0) + totals.get("igst_total", 0.0))),
-            ("Grand total", totals.get("grand_total")),
+    table_data = [
+        [
+            "Sl No.",
+            "Description of Generator",
+            "Qty.",
+            "Unit Price, Tk.",
+            "Total Price, Tk.",
         ]
-    if totals_rows:
-        totals_table = Table(
+    ]
+
+    for idx, item in enumerate(items, start=1):
+        description_parts = [
+            clean_text(item.get("Description")) or clean_text(item.get("description")) or "Item",
+            clean_text(item.get("Specs")) or "",
+        ]
+        description = "<br/>".join(filter(None, description_parts))
+        qty_value = _coerce_float(item.get("Quantity") or item.get("quantity"), 0.0)
+        rate_value = item.get("Rate") if "Rate" in item else item.get("unit_price")
+        line_total_value = item.get("Line total") if "Line total" in item else item.get("line_total")
+        table_data.append(
             [
-                [label, format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"]
-                for label, value in totals_rows
-                if value is not None
-            ],
-            colWidths=[doc.width * 0.5, doc.width * 0.5],
+                str(idx),
+                Paragraph(description, styles["BodySmall"]),
+                Paragraph(f"{qty_value:,.0f}", styles["BodySmall"]),
+                Paragraph(format_money(rate_value) or f"{_coerce_float(rate_value, 0.0):,.2f}", styles["BodySmall"]),
+                Paragraph(
+                    format_money(line_total_value) or f"{_coerce_float(line_total_value, 0.0):,.2f}",
+                    styles["BodySmall"],
+                ),
+            ]
         )
-        totals_table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#0f172a")),
-                    ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
-                    ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, -1), 11),
-                    ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
-                ]
-            )
+
+    table_data.append(["", "", "", "<b>Total Amount (Tk.)</b>", f"<b>{grand_total_label}</b>"])
+
+    col_widths = [doc.width * 0.08, doc.width * 0.48, doc.width * 0.1, doc.width * 0.17, doc.width * 0.17]
+    pricing_table = Table(table_data, colWidths=col_widths, repeatRows=1)
+    pricing_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -2), 0.5, colors.grey),
+                ("BOX", (0, 0), (-1, -2), 0.5, colors.grey),
+                ("SPAN", (0, -1), (2, -1)),
+                ("BACKGROUND", (0, -1), (-1, -1), colors.whitesmoke),
+                ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+                ("GRID", (0, -1), (-1, -1), 0.5, colors.grey),
+                ("BOX", (0, -1), (-1, -1), 0.5, colors.grey),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ]
         )
-        story.append(totals_table)
+    )
+    story.append(pricing_table)
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph(f"In Words: {grand_total_label}", styles["BodySmall"]))
+    story.append(Spacer(1, 16))
+    story.append(Paragraph(closing, styles["BodySmall"]))
+    story.append(Spacer(1, 30))
+    story.append(Paragraph(prepared_by, styles["BodySmall"]))
+    if prepared_title:
+        story.append(Paragraph(prepared_title, styles["BodySmall"]))
+    if prepared_contact:
+        story.append(Paragraph(prepared_contact, styles["BodySmall"]))
 
     doc.build(
         story,
         onFirstPage=_draw_letterhead_background,
         onLaterPages=_draw_letterhead_background,
     )
-    buffer.seek(0)
-    return buffer.read()
 
-
-def _load_letterhead_data_uri(template_choice: Optional[str] = None) -> Optional[str]:
-    template_choice = template_choice or "PS letterhead"
-    base_dir = Path(__file__).resolve().parent
-    default_candidates = [
-        base_dir / "PS-SALES-main" / "ps_letterhead.png",
-        base_dir / "ps_letterhead.png",
-        base_dir / "letterhead.png",
-        base_dir / "letterhead",
-    ]
-
-    preferred: list[Path] = []
-    if template_choice == "PS letterhead":
-        preferred = [base_dir / "PS-SALES-main" / "ps_letterhead.png", base_dir / "ps_letterhead.png"]
-    elif template_choice == "Default letterhead":
-        preferred = [base_dir / "letterhead.png", base_dir / "letterhead"]
-
-    seen: set[Path] = set()
-    candidates: list[Path] = []
-    for path in preferred + default_candidates:
-        if path in seen:
-            continue
-        seen.add(path)
-        candidates.append(path)
-
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            raw = path.read_bytes()
-            mime = "image/png"
-            if path.suffix.lower() in {".jpg", ".jpeg"}:
-                mime = "image/jpeg"
-            elif path.suffix.lower() in {".webp"}:
-                mime = "image/webp"
-            encoded = base64.b64encode(raw).decode("utf-8")
-            return f"data:{mime};base64,{encoded}"
-        except Exception:
-            continue
-    return None
+    return buffer.getvalue()
 
 
 def _render_letterhead_preview(
@@ -6708,16 +6689,16 @@ def _render_letterhead_preview(
         or metadata.get("Quotation reference", "")
     )
     address = html.escape(metadata.get("Customer address", ""))
+    district = html.escape(metadata.get("Customer district", ""))
     salutation = html.escape(metadata.get("Salutation", "Dear Sir,"))
     intro = html.escape(
         metadata.get("Introduction")
-        or metadata.get("Introduction / cover paragraph", "")
+        or metadata.get("Introduction / cover paragraph", "We thank you for your inquiry and are pleased to submit our best proposal as desired.")
     )
     closing = html.escape(
         metadata.get("Closing / thanks")
-        or metadata.get("Closing", "")
+        or metadata.get("Closing", "With Thanks & Kind Regards")
     )
-    project = html.escape(metadata.get("Customer district", ""))
     date_value = html.escape(metadata.get("Date", ""))
     prepared_by = html.escape(metadata.get("Salesperson name", ""))
     prepared_title = html.escape(metadata.get("Salesperson title", ""))
@@ -6725,122 +6706,75 @@ def _render_letterhead_preview(
     attention_name = html.escape(metadata.get("Attention name", ""))
     attention_title = html.escape(metadata.get("Attention title", ""))
 
-
-    pricing_rows = ""
-    if items:
-        line_items = items[:6]
-        pricing_cells = []
-            pricing_cells.append(
-                """
-                <div style=\"display: grid; grid-template-columns: 1.2fr 0.3fr 0.45fr 0.45fr; align-items: center; padding: 10px 12px; background: #0f172a; color: #fff; border-radius: 12px; font-weight: 700;\">
-                  <div>Description</div>
-                  <div style=\"text-align: right;\">Qty</div>
-                  <div style=\"text-align: right;\">Rate</div>
-                  <div style=\"text-align: right;\">Amount</div>
-                </div>
-                """
-            )
-        for item in line_items:
-            title = html.escape(clean_text(item.get("Description")) or "Item")
-            specs = html.escape(clean_text(item.get("Specs")) or "")
-            qty = _coerce_float(item.get("Quantity"), 0.0)
-            qty_display = f"{int(qty)}" if math.isclose(qty, round(qty)) else f"{qty:,.2f}"
-            amount_display = _format_currency(item.get("Line total"))
-            rate_display = _format_currency(item.get("Rate"))
-            pricing_cells.append(
-                f"""
-                <div style=\"display: grid; grid-template-columns: 1.2fr 0.3fr 0.45fr 0.45fr; align-items: center; gap: 10px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 12px; background: #f8fafc;\">
-                  <div>
-                    <div style=\"font-weight: 650; color: #0f172a;\">{title}</div>
-                    <div style=\"color: #475569; font-size: 13px; margin-top: 2px;\">{specs}</div>
-                  </div>
-                  <div style=\"text-align: right; font-weight: 600; color: #0f172a;\">{qty_display}</div>
-                  <div style=\"text-align: right; color: #0f172a;\">{rate_display}</div>
-                  <div style=\"text-align: right; font-size: 17px; font-weight: 800; color: #0f172a;\">{amount_display}</div>
-                </div>
-                """
-            )
-        pricing_rows = "".join(pricing_cells)
-
-    totals_rows = []
-    if totals:
-        totals_rows = [
-            ("Gross", totals.get("gross_total")),
-            ("Discounts", totals.get("discount_total")),
-            ("Taxes", (totals.get("cgst_total", 0.0) + totals.get("sgst_total", 0.0) + totals.get("igst_total", 0.0))),
-            ("Grand total", totals.get("grand_total")),
-        ]
-    totals_html = ""
-    if totals_rows:
-        rows_markup = "".join(
-            f"<div style='display:flex; justify-content:space-between; padding:6px 0; color:#0f172a;'>"
-            f"<span style='color:#475569;'>{html.escape(label)}</span>"
-            f"<strong>{_format_currency(value)}</strong>"
-            f"</div>"
-            for label, value in totals_rows
-            if value is not None
+    line_items = items[:8]
+    rows_markup = []
+    for idx, item in enumerate(line_items, start=1):
+        title = html.escape(clean_text(item.get("Description")) or "Item")
+        specs = html.escape(clean_text(item.get("Specs")) or "")
+        qty = _coerce_float(item.get("Quantity"), 0.0)
+        qty_display = f"{int(qty)}" if math.isclose(qty, round(qty)) else f"{qty:,.2f}"
+        rate_display = _format_currency(item.get("Rate"))
+        total_display = _format_currency(item.get("Line total"))
+        detail_block = f"{title}<br/><span style='color:#475569;'>{specs}</span>" if specs else title
+        rows_markup.append(
+            f"<tr>"
+            f"<td style='padding:6px; text-align:center; border:1px solid #cbd5e1;'>{idx}</td>"
+            f"<td style='padding:6px; border:1px solid #cbd5e1;'>{detail_block}</td>"
+            f"<td style='padding:6px; text-align:center; border:1px solid #cbd5e1;'>{qty_display}</td>"
+            f"<td style='padding:6px; text-align:right; border:1px solid #cbd5e1;'>{rate_display}</td>"
+            f"<td style='padding:6px; text-align:right; border:1px solid #cbd5e1;'>{total_display}</td>"
+            f"</tr>"
         )
-        totals_html = f"""
-        <div style="margin-top: 12px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 12px; background: #fff;">
-          <div style="font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Pricing summary</div>
-          {rows_markup}
-        </div>
-        """
+
+    total_row = (
+        f"<tr style='background:#f8fafc;'>"
+        f"<td colspan='3' style='padding:6px; border:1px solid #cbd5e1;'></td>"
+        f"<td style='padding:6px; text-align:right; border:1px solid #cbd5e1; font-weight:700;'>Total Amount (Tk.)</td>"
+        f"<td style='padding:6px; text-align:right; border:1px solid #cbd5e1; font-weight:700;'>{grand_total}</td>"
+        f"</tr>"
+    )
+
+    address_block = "<br/>".join(filter(None, [customer, contact, address, district]))
 
     preview_html = f"""
     <div style="margin-top: 1rem; display: flex; justify-content: center;">
-      <div style="position: relative; width: 960px; min-height: 980px; border: 1px solid #e5e7eb; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 60px rgba(15, 23, 42, 0.16); background: #f8fafc;">
+      <div style="position: relative; width: 940px; min-height: 1100px; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; box-shadow: 0 18px 48px rgba(15, 23, 42, 0.14); background: #f8fafc;">
         <div style="position: absolute; inset: 0; background: url('{data_uri}') no-repeat center top / contain; opacity: 0.95;"></div>
-        <div style="position: relative; padding: 140px 56px 96px 56px; color: #0f172a; font-family: 'Inter', sans-serif;">
-        <div style="background: rgba(255, 255, 255, 0.9); padding: 28px; border-radius: 12px; max-width: 920px; margin: 0 auto; box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);">
-          <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;">
-            <div>
-              <div style="font-size: 22px; font-weight: 700; color: #0f172a;">{subject}</div>
-              <div style="margin-top: 6px; color: #475569; font-size: 14px;">Ref: {reference or '—'}</div>
-              <div style="margin-top: 2px; color: #475569; font-size: 14px;">Project: {project or '—'}</div>
-            </div>
-            <div style="text-align: right; min-width: 220px;">
-              <div style="color: #475569; font-size: 13px;">Date</div>
-              <div style="font-size: 16px; font-weight: 600; color: #0f172a;">{date_value or '—'}</div>
-              <div style="margin-top: 10px; color: #475569; font-size: 13px;">Grand total</div>
-              <div style="font-size: 20px; font-weight: 800; color: #0f172a;">{grand_total}</div>
-            </div>
+        <div style="position: relative; padding: 130px 72px 90px 72px; color: #0f172a; font-family: 'Arial', sans-serif;">
+          <div style="text-align: right; font-size: 13px; line-height: 1.5;">
+            <div><strong>Date:</strong> {date_value or '—'}</div>
+            <div><strong>Ref:</strong> {reference or '—'}</div>
           </div>
-          <hr style="margin: 18px 0; border: none; border-top: 1px solid #e2e8f0;" />
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px;">
-            <div style="padding: 12px; background: #f8fafc; border-radius: 10px;">
-              <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Customer</div>
-              <div style="margin-top: 6px; font-weight: 600; color: #0f172a;">{customer or '—'}</div>
-              <div style="margin-top: 4px; color: #475569;">{contact or '—'}</div>
-              <div style="margin-top: 4px; color: #475569; font-size: 13px;">{address or ''}</div>
-            </div>
-            <div style="padding: 12px; background: #f8fafc; border-radius: 10px;">
-              <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Attention</div>
-              <div style="margin-top: 6px; font-weight: 600; color: #0f172a;">{attention_name or '—'}</div>
-              <div style="margin-top: 2px; color: #475569; font-size: 13px;">{attention_title or ''}</div>
-            </div>
-            <div style="padding: 12px; background: #f8fafc; border-radius: 10px;">
-              <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Prepared by</div>
-              <div style="margin-top: 6px; font-weight: 600; color: #0f172a;">{prepared_by or '—'}</div>
-              <div style="margin-top: 2px; color: #475569; font-size: 13px;">{prepared_title or ''}</div>
-              <div style="margin-top: 4px; color: #475569; font-size: 13px;">{prepared_contact or ''}</div>
-            </div>
+          <div style="margin-top: 12px; font-size: 13px; line-height: 1.6;">
+            <div><strong>To</strong></div>
+            <div>{address_block or '—'}</div>
           </div>
-          <div style="margin-top: 14px; color: #0f172a; line-height: 1.65; padding: 12px; background: #fff; border-radius: 10px; border: 1px solid #e2e8f0;">
-            <div style="margin-bottom: 6px; font-weight: 600;">{salutation}</div>
-            <div>{intro or '—'}</div>
-            <div style="margin-top: 12px; font-weight: 600;">{closing or ''}</div>
+          <div style="margin-top: 8px; font-size: 13px;"><strong>Attention:</strong> {attention_name or '—'} {attention_title or ''}</div>
+          <div style="margin-top: 10px; font-size: 13px;"><strong>Subject:</strong> {subject}</div>
+          <div style="margin-top: 12px; font-size: 13px; line-height: 1.65;">{salutation} {intro}</div>
+          <div style="margin-top: 14px; font-size: 13px; font-weight: 700;">PRICE SCHEDULE</div>
+          <table style="width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12.5px;">
+            <thead>
+              <tr style="background: #e2e8f0;">
+                <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: center;">Sl No.</th>
+                <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: left;">Description of Generator</th>
+                <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: center;">Qty.</th>
+                <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: right;">Unit Price, Tk.</th>
+                <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: right;">Total Price, Tk.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {''.join(rows_markup) or '<tr><td colspan="5" style="padding:8px; text-align:center; border:1px solid #cbd5e1; color:#64748b;">Add items to see the price schedule.</td></tr>'}
+              {total_row}
+            </tbody>
+          </table>
+          <div style="margin-top: 10px; font-size: 13px;">In Words: {grand_total}</div>
+          <div style="margin-top: 18px; font-size: 13px; line-height: 1.6;">{closing}</div>
+          <div style="margin-top: 40px; font-size: 13px; line-height: 1.4;">
+            <div>{prepared_by or ''}</div>
+            <div>{prepared_title or ''}</div>
+            <div>{prepared_contact or ''}</div>
           </div>
-          <div style="margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px;">
-            <div>
-              <div style="font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b;">Pricing</div>
-              <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px;">
-                {pricing_rows or '<div style="color:#94a3b8;">Add items above to see pricing on the letterhead.</div>'}
-              </div>
-            </div>
-            {totals_html}
-          </div>
-        </div>
         </div>
       </div>
     </div>
@@ -7301,14 +7235,14 @@ def _render_quotation_section(conn):
         )
         reset = action_cols[1].form_submit_button("Reset form", use_container_width=True)
 
-            if reset:
-                _reset_quotation_form_state()
-                st.session_state["quotation_feedback"] = (
-                    "info",
-                    "Quotation form reset to defaults.",
-                )
-                st.toast("Quotation form reset", icon="ℹ️")
-                _safe_rerun()
+        if reset:
+            _reset_quotation_form_state()
+            st.session_state["quotation_feedback"] = (
+                "info",
+                "Quotation form reset to defaults.",
+            )
+            st.toast("Quotation form reset", icon="ℹ️")
+            _safe_rerun()
 
     if st.session_state.get("quotation_autofill_customer"):
         seed = autofill_records.get(int(st.session_state["quotation_autofill_customer"]))
@@ -7680,8 +7614,30 @@ def _render_quotation_management(conn):
         st.info("No quotations recorded yet. Create a quotation above to start tracking.")
         return
 
-    quotes_df["follow_up_date"] = pd.to_datetime(
-        quotes_df.get("follow_up_date"), errors="coerce"
+    def _as_editable_date(value: object) -> Optional[date]:
+        if value in (None, "", "nan", "NaT"):
+            return None
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        try:
+            parsed = pd.to_datetime(value, errors="coerce", dayfirst=True)
+        except Exception:
+            return None
+        if isinstance(parsed, pd.DatetimeIndex):
+            parsed = parsed[0] if len(parsed) else None
+        if parsed is None or pd.isna(parsed):
+            return None
+        if isinstance(parsed, pd.Timestamp):
+            parsed = parsed.to_pydatetime()
+        if isinstance(parsed, datetime):
+            return parsed.date()
+        return None
+
+    quotes_df = quotes_df.copy()
+    quotes_df["follow_up_date"] = quotes_df.get("follow_up_date", pd.Series(dtype=object)).apply(
+        _as_editable_date
     )
     quotes_df = fmt_dates(quotes_df, ["quote_date"])
     quotes_df["total_amount"] = quotes_df["total_amount"].apply(
@@ -7713,6 +7669,10 @@ def _render_quotation_management(conn):
             help="Relative path to the uploaded payment receipt, if any.",
         ),
     }
+
+    st.caption(
+        "Edit follow-up status, notes, and dates directly in the table, then press **Save quotation updates** to persist your changes."
+    )
 
     edited = st.data_editor(
         quotes_df,
