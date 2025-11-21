@@ -3150,7 +3150,9 @@ def login_box(conn):
     st.sidebar.markdown("### Login")
     if st.session_state.user:
         st.sidebar.success(f"Logged in as {st.session_state.user['username']} ({st.session_state.user['role']})")
-        if st.sidebar.button("Logout", key="sidebar_logout"):
+        # Use a unique key to avoid clashes when other sidebar widgets reuse logout
+        # functionality in different contexts.
+        if st.sidebar.button("Logout", key="sidebar_logout_main"):
             st.session_state.user = None
             st.session_state.page = "Dashboard"
             _safe_rerun()
@@ -6728,16 +6730,16 @@ def _render_letterhead_preview(
     if items:
         line_items = items[:6]
         pricing_cells = []
-        pricing_cells.append(
-            """
-            <div style=\"display: grid; grid-template-columns: 1.2fr 0.3fr 0.45fr 0.45fr; align-items: center; padding: 10px 12px; background: #0f172a; color: #fff; border-radius: 12px; font-weight: 700;\">
-              <div>Description</div>
-              <div style=\"text-align: right;\">Qty</div>
-              <div style=\"text-align: right;\">Rate</div>
-              <div style=\"text-align: right;\">Line price</div>
-            </div>
-            """
-        )
+            pricing_cells.append(
+                """
+                <div style=\"display: grid; grid-template-columns: 1.2fr 0.3fr 0.45fr 0.45fr; align-items: center; padding: 10px 12px; background: #0f172a; color: #fff; border-radius: 12px; font-weight: 700;\">
+                  <div>Description</div>
+                  <div style=\"text-align: right;\">Qty</div>
+                  <div style=\"text-align: right;\">Rate</div>
+                  <div style=\"text-align: right;\">Amount</div>
+                </div>
+                """
+            )
         for item in line_items:
             title = html.escape(clean_text(item.get("Description")) or "Item")
             specs = html.escape(clean_text(item.get("Specs")) or "")
@@ -6987,6 +6989,11 @@ def _render_quotation_section(conn):
     st.session_state.setdefault("quotation_prepared_by", salesperson_seed)
     st.session_state.setdefault("quotation_salesperson_contact", salesperson_phone)
     st.session_state.setdefault("quotation_salesperson_title", salesperson_title_seed)
+    can_edit_salesperson = current_user_is_admin()
+    if not can_edit_salesperson:
+        st.session_state["quotation_prepared_by"] = salesperson_seed
+        st.session_state["quotation_salesperson_contact"] = salesperson_phone
+        st.session_state["quotation_salesperson_title"] = salesperson_title_seed
 
     def _compute_line_total(row: pd.Series) -> float:
         qty = max(_coerce_float(row.get("quantity"), 0.0), 0.0)
@@ -7027,65 +7034,74 @@ def _render_quotation_section(conn):
         "Custom date": None,
     }
 
-    with st.form("quotation_form"):
-        header_cols = st.columns((1.25, 0.75))
-        with header_cols[0]:
-            st.caption("Compose, save and track quotations from a single workspace.")
-            template_choice = "PS letterhead"
-            st.session_state["quotation_letter_template"] = template_choice
-            st.info(
-                "Using the PS letterhead automatically. Your quotation details are overlaid live.",
-                icon="🧾",
-            )
-        with header_cols[1]:
-            st.caption("Productivity assists")
-            st.write("Smart autofill from companies")
-            selected_customer = st.selectbox(
-                "Customer details seed",
-                autofill_options,
-                format_func=lambda val: autofill_labels.get(val, "Manual entry"),
-                key="quotation_autofill_customer",
-            )
+    form_col, preview_col = st.columns((1.15, 0.85))
+    submit = False
+    with form_col:
+        with st.form("quotation_form"):
+            header_cols = st.columns((1.25, 0.75))
+            with header_cols[0]:
+                st.caption("Compose, save and track quotations from a single workspace.")
+                template_choice = "PS letterhead"
+                st.session_state["quotation_letter_template"] = template_choice
+                st.info(
+                    "Using the PS letterhead automatically. Your quotation details are overlaid live.",
+                    icon="🧾",
+                )
+            with header_cols[1]:
+                st.caption("Productivity assists")
+                st.write("Smart autofill from companies")
+                selected_customer = st.selectbox(
+                    "Customer details seed",
+                    autofill_options,
+                    format_func=lambda val: autofill_labels.get(val, "Manual entry"),
+                    key="quotation_autofill_customer",
+                )
 
-        top_cols = st.columns(2)
-        with top_cols[0]:
-            reference_value = st.text_input(
-                "Reference number",
-                value=st.session_state.get("quotation_reference", ""),
-                key="quotation_reference",
-            )
-            quotation_date = st.date_input(
-                "Date",
-                value=st.session_state.get("quotation_date") or default_date,
-                key="quotation_date",
-            )
-            quote_type = st.selectbox(
-                "Quote type",
-                ["Retail", "Wholesale"],
-                key="quotation_quote_type",
-            )
-            default_discount = 0.0
-        with top_cols[1]:
-            prepared_by = st.text_input(
-                "Salesperson name",
-                value=st.session_state.get("quotation_prepared_by") or salesperson_seed,
-                key="quotation_prepared_by",
-            )
-            salesperson_title = st.text_input(
-                "Salesperson title",
-                value=st.session_state.get("quotation_salesperson_title", ""),
-                key="quotation_salesperson_title",
-            )
-            salesperson_contact = st.text_input(
-                "Salesperson contact",
-                value=st.session_state.get("quotation_salesperson_contact", ""),
-                key="quotation_salesperson_contact",
-            )
-            admin_notes = st.text_area(
-                "Quotation remarks for admin",
-                value=st.session_state.get("quotation_admin_notes", ""),
-                key="quotation_admin_notes",
-            )
+            top_cols = st.columns(2)
+            with top_cols[0]:
+                reference_value = st.text_input(
+                    "Reference number",
+                    value=st.session_state.get("quotation_reference", ""),
+                    key="quotation_reference",
+                )
+                quotation_date = st.date_input(
+                    "Date",
+                    value=st.session_state.get("quotation_date") or default_date,
+                    key="quotation_date",
+                )
+                quote_type = st.selectbox(
+                    "Quote type",
+                    ["Retail", "Wholesale"],
+                    key="quotation_quote_type",
+                )
+                default_discount = 0.0
+            with top_cols[1]:
+                prepared_by = st.text_input(
+                    "Salesperson name",
+                    value=st.session_state.get("quotation_prepared_by") or salesperson_seed,
+                    key="quotation_prepared_by",
+                    disabled=not can_edit_salesperson,
+                    help=None
+                    if can_edit_salesperson
+                    else "Salesperson details are locked to your profile.",
+                )
+                salesperson_title = st.text_input(
+                    "Salesperson title",
+                    value=st.session_state.get("quotation_salesperson_title", ""),
+                    key="quotation_salesperson_title",
+                    disabled=not can_edit_salesperson,
+                )
+                salesperson_contact = st.text_input(
+                    "Salesperson contact",
+                    value=st.session_state.get("quotation_salesperson_contact", ""),
+                    key="quotation_salesperson_contact",
+                    disabled=not can_edit_salesperson,
+                )
+                admin_notes = st.text_area(
+                    "Quotation remarks for admin",
+                    value=st.session_state.get("quotation_admin_notes", ""),
+                    key="quotation_admin_notes",
+                )
 
         contact_cols = st.columns(2)
         with contact_cols[0]:
@@ -7215,8 +7231,8 @@ def _render_quotation_section(conn):
                     format="%.2f",
                 ),
                 "line_total": st.column_config.NumberColumn(
-                    "Line price",
-                    help="Quantity × rate after discount",
+                    "Amount",
+                    help="Quantity × rate after discount (read only)",
                     format="%.2f",
                     disabled=True,
                 ),
@@ -7285,13 +7301,14 @@ def _render_quotation_section(conn):
         )
         reset = action_cols[1].form_submit_button("Reset form", use_container_width=True)
 
-        if reset:
-            _reset_quotation_form_state()
-            st.session_state["quotation_feedback"] = (
-                "info",
-                "Quotation form reset to defaults.",
-            )
-            _safe_rerun()
+            if reset:
+                _reset_quotation_form_state()
+                st.session_state["quotation_feedback"] = (
+                    "info",
+                    "Quotation form reset to defaults.",
+                )
+                st.toast("Quotation form reset", icon="ℹ️")
+                _safe_rerun()
 
     if st.session_state.get("quotation_autofill_customer"):
         seed = autofill_records.get(int(st.session_state["quotation_autofill_customer"]))
@@ -7337,35 +7354,9 @@ def _render_quotation_section(conn):
         "Attention title": st.session_state.get("quotation_attention_title"),
     }
 
-    st.markdown("#### Live quotation preview")
-    preview_cols = st.columns([1, 1.15])
-    with preview_cols[0]:
-        st.caption("See how your quotation details map onto the letterhead while composing.")
-        preview_table = pd.DataFrame(
-            [
-                ("Subject", preview_metadata.get("Subject") or "Quotation"),
-                ("Date", preview_metadata.get("Date") or ""),
-                ("Customer", preview_metadata.get("Customer company") or ""),
-                ("Contact", preview_metadata.get("Customer contact") or ""),
-                ("Reference", preview_metadata.get("Reference number") or ""),
-                (
-                    "Prepared by",
-                    " ".join(
-                        part
-                        for part in [
-                            preview_metadata.get("Salesperson name"),
-                            preview_metadata.get("Salesperson title"),
-                        ]
-                        if part
-                    ),
-                ),
-                ("Contact number", preview_metadata.get("Salesperson contact") or ""),
-            ],
-            columns=["Field", "Value"],
-        )
-        st.table(preview_table)
-        st.markdown(f"**Estimated grand total:** {preview_grand_total}")
-    with preview_cols[1]:
+    with preview_col:
+        st.markdown("#### Live quotation preview")
+        st.caption("Compose on the left and review the letterhead beside the form.")
         _render_letterhead_preview(
             preview_metadata,
             preview_grand_total,
@@ -7548,6 +7539,8 @@ def _render_quotation_section(conn):
                     severity="info",
                 )
 
+        st.toast("Quotation created", icon="✅")
+
         st.session_state[result_key] = {
             "display": display_df,
             "metadata_items": list(metadata.items()),
@@ -7687,7 +7680,10 @@ def _render_quotation_management(conn):
         st.info("No quotations recorded yet. Create a quotation above to start tracking.")
         return
 
-    quotes_df = fmt_dates(quotes_df, ["quote_date", "follow_up_date"])
+    quotes_df["follow_up_date"] = pd.to_datetime(
+        quotes_df.get("follow_up_date"), errors="coerce"
+    )
+    quotes_df = fmt_dates(quotes_df, ["quote_date"])
     quotes_df["total_amount"] = quotes_df["total_amount"].apply(
         lambda value: format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
     )
@@ -7703,7 +7699,9 @@ def _render_quotation_management(conn):
             help="Example: Possible, Hot, Cold, Closed",
         ),
         "follow_up_notes": st.column_config.TextColumn("Follow-up notes"),
-        "follow_up_date": st.column_config.DateColumn("Follow-up date", format="DD-MM-YYYY"),
+        "follow_up_date": st.column_config.DateColumn(
+            "Follow-up date", format="DD-MM-YYYY"
+        ),
         "reminder_label": st.column_config.TextColumn("Reminder"),
         "reference": st.column_config.TextColumn("Reference"),
         "customer_company": st.column_config.TextColumn("Customer"),
@@ -7727,6 +7725,7 @@ def _render_quotation_management(conn):
     if st.button("Save quotation updates", key="quotation_tracker_save"):
         _update_quotation_records(conn, edited.to_dict("records"))
         st.success("Quotation statuses updated.")
+        st.toast("Quotation tracker updated", icon="✅")
 
 
 def advanced_search_page(conn):
