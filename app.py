@@ -4,6 +4,7 @@ import html
 import io
 import json
 import math
+from reportlab.lib.utils import ImageReader
 import os
 import re
 import sqlite3
@@ -27,7 +28,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Image as PdfImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 try:
     from storage_paths import get_storage_dir
@@ -1846,7 +1847,6 @@ def _reset_quotation_form_state() -> None:
         "quotation_subject",
         "quotation_scope_notes",
         "quotation_terms",
-        "quotation_default_discount",
         "quotation_status",
         "quotation_follow_up_status",
         "quotation_follow_up_notes",
@@ -3150,7 +3150,7 @@ def login_box(conn):
     st.sidebar.markdown("### Login")
     if st.session_state.user:
         st.sidebar.success(f"Logged in as {st.session_state.user['username']} ({st.session_state.user['role']})")
-        if st.sidebar.button("Logout"):
+        if st.sidebar.button("Logout", key="sidebar_logout"):
             st.session_state.user = None
             st.session_state.page = "Dashboard"
             _safe_rerun()
@@ -4525,6 +4525,12 @@ def customers_page(conn):
         st.session_state.setdefault(
             "new_customer_products_rows", products_state
         )
+        user_seed = get_current_user()
+        salesperson_seed = ""
+        if user_seed:
+            bits = [clean_text(user_seed.get("username")), clean_text(user_seed.get("phone"))]
+            salesperson_seed = " ".join(bit for bit in bits if bit)
+        st.session_state.setdefault("new_customer_sales_person", salesperson_seed)
         with st.form("new_customer"):
             name = st.text_input("Customer name *", key="new_customer_name")
             company = st.text_input(
@@ -4609,6 +4615,7 @@ def customers_page(conn):
                 )
                 sales_person_input = st.text_input(
                     "Sales person",
+                    value=st.session_state.get("new_customer_sales_person", salesperson_seed),
                     key="new_customer_sales_person",
                     help="Record who handled this sale for quick reference later.",
                 )
@@ -4657,6 +4664,7 @@ def customers_page(conn):
                 address_val = clean_text(address)
                 delivery_address_val = clean_text(delivery_address)
                 remarks_val = clean_text(remarks)
+                sales_person_value = clean_text(sales_person_input) or salesperson_seed
                 cleaned_products, product_labels = normalize_product_entries(product_entries)
                 product_label = "\n".join(product_labels) if product_labels else None
                 purchase_str = purchase_date.strftime("%Y-%m-%d") if purchase_date else None
@@ -4676,7 +4684,7 @@ def customers_page(conn):
                         purchase_str,
                         product_label,
                         do_serial,
-                        clean_text(sales_person_input),
+                        sales_person_value,
                         amount_value,
                         created_by,
                     ),
@@ -6482,19 +6490,33 @@ def _build_quotation_pdf(
 
     story: list[object] = []
     letterhead_path = _resolve_letterhead_path(template_choice)
-    if letterhead_path and letterhead_path.exists():
+    letterhead_img_path = str(letterhead_path) if letterhead_path and letterhead_path.exists() else None
+
+    def _draw_letterhead_background(canvas, _doc):
+        if not letterhead_img_path:
+            return
+        canvas.saveState()
         try:
-            img = PdfImage(str(letterhead_path))
-            aspect = img.imageHeight / float(img.imageWidth)
-            img.drawHeight = 38 * mm
-            img.drawWidth = img.drawHeight / aspect
-            if img.drawWidth > doc.width:
-                img.drawWidth = doc.width
-                img.drawHeight = doc.width * aspect
-            story.append(img)
-            story.append(Spacer(1, 8))
+            reader = ImageReader(letterhead_img_path)
+            img_width, img_height = reader.getSize()
+            page_width, page_height = _doc.pagesize
+            target_width = page_width
+            target_height = target_width * (img_height / img_width)
+            canvas.drawImage(
+                letterhead_img_path,
+                0,
+                page_height - target_height,
+                width=target_width,
+                height=target_height,
+                preserveAspectRatio=True,
+                mask="auto",
+            )
         except Exception:
             pass
+        finally:
+            canvas.restoreState()
+
+    story.append(Spacer(1, 6))
 
     story.append(Paragraph(subject, styles["Title"]))
     story.append(Paragraph(f"Ref: {reference}", styles["Muted"]))
@@ -6600,7 +6622,11 @@ def _build_quotation_pdf(
         )
         story.append(totals_table)
 
-    doc.build(story)
+    doc.build(
+        story,
+        onFirstPage=_draw_letterhead_background,
+        onLaterPages=_draw_letterhead_background,
+    )
     buffer.seek(0)
     return buffer.read()
 
@@ -6697,10 +6723,21 @@ def _render_letterhead_preview(
     attention_name = html.escape(metadata.get("Attention name", ""))
     attention_title = html.escape(metadata.get("Attention title", ""))
 
+
     pricing_rows = ""
     if items:
         line_items = items[:6]
         pricing_cells = []
+        pricing_cells.append(
+            """
+            <div style=\"display: grid; grid-template-columns: 1.2fr 0.3fr 0.45fr 0.45fr; align-items: center; padding: 10px 12px; background: #0f172a; color: #fff; border-radius: 12px; font-weight: 700;\">
+              <div>Description</div>
+              <div style=\"text-align: right;\">Qty</div>
+              <div style=\"text-align: right;\">Rate</div>
+              <div style=\"text-align: right;\">Line price</div>
+            </div>
+            """
+        )
         for item in line_items:
             title = html.escape(clean_text(item.get("Description")) or "Item")
             specs = html.escape(clean_text(item.get("Specs")) or "")
@@ -6708,19 +6745,16 @@ def _render_letterhead_preview(
             qty_display = f"{int(qty)}" if math.isclose(qty, round(qty)) else f"{qty:,.2f}"
             amount_display = _format_currency(item.get("Line total"))
             rate_display = _format_currency(item.get("Rate"))
-            detail_line = f"{qty_display} × {rate_display}" if rate_display else qty_display
             pricing_cells.append(
                 f"""
-                <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 10px 12px; border: 1px solid #e2e8f0; border-radius: 12px; background: #f8fafc;">
+                <div style=\"display: grid; grid-template-columns: 1.2fr 0.3fr 0.45fr 0.45fr; align-items: center; gap: 10px; padding: 12px; border: 1px solid #e2e8f0; border-radius: 12px; background: #f8fafc;\">
                   <div>
-                    <div style="font-weight: 650; color: #0f172a;">{title}</div>
-                    <div style="color: #475569; font-size: 13px; margin-top: 2px;">{specs}</div>
-                    <div style="color: #64748b; font-size: 12px; margin-top: 6px;">{detail_line}</div>
+                    <div style=\"font-weight: 650; color: #0f172a;\">{title}</div>
+                    <div style=\"color: #475569; font-size: 13px; margin-top: 2px;\">{specs}</div>
                   </div>
-                  <div style="text-align: right; min-width: 120px;">
-                    <div style="font-size: 14px; color: #475569;">Line total</div>
-                    <div style="font-size: 17px; font-weight: 800; color: #0f172a;">{amount_display}</div>
-                  </div>
+                  <div style=\"text-align: right; font-weight: 600; color: #0f172a;\">{qty_display}</div>
+                  <div style=\"text-align: right; color: #0f172a;\">{rate_display}</div>
+                  <div style=\"text-align: right; font-size: 17px; font-weight: 800; color: #0f172a;\">{amount_display}</div>
                 </div>
                 """
             )
@@ -6752,9 +6786,11 @@ def _render_letterhead_preview(
         """
 
     preview_html = f"""
-    <div style="margin-top: 1rem; border: 1px solid #e5e7eb; border-radius: 14px; overflow: hidden;">
-      <div style="position: relative; min-height: 820px; background: url('{data_uri}') no-repeat center top / cover; padding: 180px 42px 120px 42px; color: #0f172a; font-family: 'Inter', sans-serif;">
-        <div style="background: rgba(255, 255, 255, 0.9); padding: 28px; border-radius: 12px; max-width: 900px; margin: 0 auto; box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);">
+    <div style="margin-top: 1rem; display: flex; justify-content: center;">
+      <div style="position: relative; width: 960px; min-height: 980px; border: 1px solid #e5e7eb; border-radius: 16px; overflow: hidden; box-shadow: 0 20px 60px rgba(15, 23, 42, 0.16); background: #f8fafc;">
+        <div style="position: absolute; inset: 0; background: url('{data_uri}') no-repeat center top / contain; opacity: 0.95;"></div>
+        <div style="position: relative; padding: 140px 56px 96px 56px; color: #0f172a; font-family: 'Inter', sans-serif;">
+        <div style="background: rgba(255, 255, 255, 0.9); padding: 28px; border-radius: 12px; max-width: 920px; margin: 0 auto; box-shadow: 0 12px 40px rgba(15, 23, 42, 0.12);">
           <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;">
             <div>
               <div style="font-size: 22px; font-weight: 700; color: #0f172a;">{subject}</div>
@@ -6802,6 +6838,7 @@ def _render_letterhead_preview(
             </div>
             {totals_html}
           </div>
+        </div>
         </div>
       </div>
     </div>
@@ -6950,6 +6987,12 @@ def _render_quotation_section(conn):
     st.session_state.setdefault("quotation_prepared_by", salesperson_seed)
     st.session_state.setdefault("quotation_salesperson_contact", salesperson_phone)
     st.session_state.setdefault("quotation_salesperson_title", salesperson_title_seed)
+
+    def _compute_line_total(row: pd.Series) -> float:
+        qty = max(_coerce_float(row.get("quantity"), 0.0), 0.0)
+        rate_val = max(_coerce_float(row.get("rate"), 0.0), 0.0)
+        discount_pct = _clamp_percentage(_coerce_float(row.get("discount"), 0.0))
+        return max(qty * rate_val * (1 - discount_pct / 100.0), 0.0)
     customer_df = df_query(
         conn,
         """
@@ -7021,14 +7064,7 @@ def _render_quotation_section(conn):
                 ["Retail", "Wholesale"],
                 key="quotation_quote_type",
             )
-            default_discount = st.number_input(
-                "Optional discount (%)",
-                min_value=0.0,
-                max_value=100.0,
-                value=float(st.session_state.get("quotation_default_discount") or 0.0),
-                step=0.5,
-                key="quotation_default_discount",
-            )
+            default_discount = 0.0
         with top_cols[1]:
             prepared_by = st.text_input(
                 "Salesperson name",
@@ -7136,6 +7172,11 @@ def _render_quotation_section(conn):
         if items_df_seed.empty:
             items_df_seed = pd.DataFrame(_default_quotation_items())
 
+        items_df_seed["line_total"] = items_df_seed.apply(_compute_line_total, axis=1)
+        items_df_seed = items_df_seed[
+            ["description", "kva", "specs", "quantity", "rate", "discount", "line_total"]
+        ]
+
         items_editor = st.data_editor(
             items_df_seed,
             num_rows="dynamic",
@@ -7173,9 +7214,17 @@ def _render_quotation_section(conn):
                     step=0.5,
                     format="%.2f",
                 ),
+                "line_total": st.column_config.NumberColumn(
+                    "Line price",
+                    help="Quantity × rate after discount",
+                    format="%.2f",
+                    disabled=True,
+                ),
             },
         )
-        st.session_state["quotation_item_rows"] = items_editor.to_dict("records")
+        edited_items = items_editor.copy()
+        edited_items["line_total"] = edited_items.apply(_compute_line_total, axis=1)
+        st.session_state["quotation_item_rows"] = edited_items.to_dict("records")
 
         closing_text = st.text_area(
             "Closing / thanks",
