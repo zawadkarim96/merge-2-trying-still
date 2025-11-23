@@ -9,6 +9,7 @@ import os
 import re
 import sqlite3
 import hashlib
+import uuid
 import zipfile
 from calendar import monthrange
 from datetime import datetime, timedelta, date
@@ -3248,13 +3249,15 @@ def init_ui():
 
 # ---------- Auth ----------
 def login_box(conn):
+    if "logout_button_key" not in st.session_state:
+        st.session_state.logout_button_key = f"sidebar_logout_main_{uuid.uuid4().hex}"
     st.sidebar.markdown("### Login")
     if st.session_state.user:
         st.sidebar.success(f"Logged in as {st.session_state.user['username']} ({st.session_state.user['role']})")
-        logout_key = "sidebar_logout_main"
-        if st.sidebar.button("Logout", key=logout_key):
+        if st.sidebar.button("Logout", key=st.session_state.logout_button_key):
             st.session_state.user = None
             st.session_state.page = "Dashboard"
+            st.session_state.logout_button_key = f"sidebar_logout_main_{uuid.uuid4().hex}"
             _safe_rerun()
         return True
     with st.sidebar.form("login_form"):
