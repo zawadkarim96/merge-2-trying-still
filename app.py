@@ -3152,7 +3152,8 @@ def login_box(conn):
         st.sidebar.success(f"Logged in as {st.session_state.user['username']} ({st.session_state.user['role']})")
         # Use a unique key to avoid clashes when other sidebar widgets reuse logout
         # functionality in different contexts.
-        if st.sidebar.button("Logout", key="sidebar_logout_main"):
+        logout_key = f"sidebar_logout_main_{st.session_state.page}"
+        if st.sidebar.button("Logout", key=logout_key):
             st.session_state.user = None
             st.session_state.page = "Dashboard"
             _safe_rerun()
@@ -6655,6 +6656,25 @@ def _build_quotation_pdf(
     return buffer.getvalue()
 
 
+def _load_letterhead_data_uri(template_choice: Optional[str] = None) -> Optional[str]:
+    template_choice = template_choice or "ps_letterhead.png"
+    candidates = [
+        Path("ps_letterhead.png"),
+        Path("assets/ps_letterhead.png"),
+        Path("letterhead"),
+    ]
+
+    for path in candidates:
+        if path.exists():
+            mime = "image/png" if path.suffix.lower() == ".png" else "application/pdf"
+            encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
+            suffix = "#page=1" if mime == "application/pdf" else ""
+            return f"data:{mime};base64,{encoded}{suffix}"
+
+    st.warning("Letterhead template missing. Upload ps_letterhead.png to see the preview.", icon="⚠️")
+    return None
+
+
 def _render_letterhead_preview(
     metadata: dict[str, Optional[str]],
     grand_total: str,
@@ -7037,212 +7057,212 @@ def _render_quotation_section(conn):
                     key="quotation_admin_notes",
                 )
 
-        contact_cols = st.columns(2)
-        with contact_cols[0]:
-            customer_contact_name = st.text_input(
-                "Customer contact name",
-                value=st.session_state.get("quotation_customer_contact_name", ""),
-                key="quotation_customer_contact_name",
+            contact_cols = st.columns(2)
+            with contact_cols[0]:
+                customer_contact_name = st.text_input(
+                    "Customer contact name",
+                    value=st.session_state.get("quotation_customer_contact_name", ""),
+                    key="quotation_customer_contact_name",
+                )
+                customer_company = st.text_input(
+                    "Customer company",
+                    value=st.session_state.get("quotation_company_name", ""),
+                    key="quotation_company_name",
+                )
+                customer_district = st.text_input(
+                    "Customer district",
+                    value=st.session_state.get("quotation_customer_district", ""),
+                    key="quotation_customer_district",
+                )
+                customer_contact = st.text_input(
+                    "Customer contact number",
+                    value=st.session_state.get("quotation_customer_contact", ""),
+                    key="quotation_customer_contact",
+                )
+            with contact_cols[1]:
+                customer_address = st.text_area(
+                    "Customer address",
+                    value=st.session_state.get("quotation_customer_address", ""),
+                    key="quotation_customer_address",
+                )
+                attention_name = st.text_input(
+                    "Attention name",
+                    value=st.session_state.get("quotation_attention_name", ""),
+                    key="quotation_attention_name",
+                )
+                attention_title = st.text_input(
+                    "Attention title",
+                    value=st.session_state.get("quotation_attention_title", ""),
+                    key="quotation_attention_title",
+                )
+
+            subject_line = st.text_input(
+                "Subject",
+                value=st.session_state.get("quotation_subject", ""),
+                key="quotation_subject",
             )
-            customer_company = st.text_input(
-                "Customer company",
-                value=st.session_state.get("quotation_company_name", ""),
-                key="quotation_company_name",
+            salutation = st.text_input(
+                "Salutation",
+                value=st.session_state.get("quotation_salutation") or "Dear Sir,",
+                key="quotation_salutation",
             )
-            customer_district = st.text_input(
-                "Customer district",
-                value=st.session_state.get("quotation_customer_district", ""),
-                key="quotation_customer_district",
-            )
-            customer_contact = st.text_input(
-                "Customer contact number",
-                value=st.session_state.get("quotation_customer_contact", ""),
-                key="quotation_customer_contact",
-            )
-        with contact_cols[1]:
-            customer_address = st.text_area(
-                "Customer address",
-                value=st.session_state.get("quotation_customer_address", ""),
-                key="quotation_customer_address",
-            )
-            attention_name = st.text_input(
-                "Attention name",
-                value=st.session_state.get("quotation_attention_name", ""),
-                key="quotation_attention_name",
-            )
-            attention_title = st.text_input(
-                "Attention title",
-                value=st.session_state.get("quotation_attention_title", ""),
-                key="quotation_attention_title",
+            intro_text = st.text_area(
+                "Introduction / cover paragraph",
+                value=st.session_state.get("quotation_introduction")
+                or "We thank you for your inquiry and are pleased to submit our best proposal as per the below details.",
+                key="quotation_introduction",
             )
 
-        subject_line = st.text_input(
-            "Subject",
-            value=st.session_state.get("quotation_subject", ""),
-            key="quotation_subject",
-        )
-        salutation = st.text_input(
-            "Salutation",
-            value=st.session_state.get("quotation_salutation") or "Dear Sir,",
-            key="quotation_salutation",
-        )
-        intro_text = st.text_area(
-            "Introduction / cover paragraph",
-            value=st.session_state.get("quotation_introduction")
-            or "We thank you for your inquiry and are pleased to submit our best proposal as per the below details.",
-            key="quotation_introduction",
-        )
+            st.markdown("#### Product details")
+            items_toolbar = st.columns(3)
+            with items_toolbar[0]:
+                add_item = st.form_submit_button("Add item", use_container_width=True)
+            with items_toolbar[1]:
+                clear_items = st.form_submit_button("Clear items", use_container_width=True)
+            with items_toolbar[2]:
+                reset_items = st.form_submit_button("Reset defaults", use_container_width=True)
+            if add_item:
+                st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
+            if clear_items:
+                st.session_state["quotation_item_rows"] = []
+            if reset_items:
+                st.session_state["quotation_item_rows"] = _default_quotation_items()
 
-        st.markdown("#### Product details")
-        items_toolbar = st.columns(3)
-        with items_toolbar[0]:
-            add_item = st.form_submit_button("Add item", use_container_width=True)
-        with items_toolbar[1]:
-            clear_items = st.form_submit_button("Clear items", use_container_width=True)
-        with items_toolbar[2]:
-            reset_items = st.form_submit_button("Reset defaults", use_container_width=True)
-        if add_item:
-            st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
-        if clear_items:
-            st.session_state["quotation_item_rows"] = []
-        if reset_items:
-            st.session_state["quotation_item_rows"] = _default_quotation_items()
+            items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
+            if not items_df_seed.empty:
+                for legacy_col, new_col in (("hsn", "specs"), ("unit", "kva")):
+                    if legacy_col in items_df_seed.columns and new_col not in items_df_seed.columns:
+                        items_df_seed[new_col] = items_df_seed[legacy_col]
+                for required in ["kva", "specs"]:
+                    if required not in items_df_seed.columns:
+                        items_df_seed[required] = ""
+                items_df_seed = items_df_seed[
+                    ["description", "kva", "specs", "quantity", "rate", "discount"]
+                ]
+            if items_df_seed.empty:
+                items_df_seed = pd.DataFrame(_default_quotation_items())
 
-        items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
-        if not items_df_seed.empty:
-            for legacy_col, new_col in (("hsn", "specs"), ("unit", "kva")):
-                if legacy_col in items_df_seed.columns and new_col not in items_df_seed.columns:
-                    items_df_seed[new_col] = items_df_seed[legacy_col]
-            for required in ["kva", "specs"]:
-                if required not in items_df_seed.columns:
-                    items_df_seed[required] = ""
+            items_df_seed["line_total"] = items_df_seed.apply(_compute_line_total, axis=1)
             items_df_seed = items_df_seed[
-                ["description", "kva", "specs", "quantity", "rate", "discount"]
+                ["description", "kva", "specs", "quantity", "rate", "discount", "line_total"]
             ]
-        if items_df_seed.empty:
-            items_df_seed = pd.DataFrame(_default_quotation_items())
 
-        items_df_seed["line_total"] = items_df_seed.apply(_compute_line_total, axis=1)
-        items_df_seed = items_df_seed[
-            ["description", "kva", "specs", "quantity", "rate", "discount", "line_total"]
-        ]
+            items_editor = st.data_editor(
+                items_df_seed,
+                num_rows="dynamic",
+                hide_index=True,
+                key="quotation_items_table",
+                use_container_width=True,
+                column_config={
+                    "description": st.column_config.TextColumn(
+                        "Tracked products",
+                        help="Describe the item or service",
+                    ),
+                    "kva": st.column_config.TextColumn(
+                        "kVA / Capacity", help="Power rating for the item"
+                    ),
+                    "specs": st.column_config.TextColumn(
+                        "Specs", help="Key specifications or notes"
+                    ),
+                    "quantity": st.column_config.NumberColumn(
+                        "Quantity",
+                        min_value=0.0,
+                        step=1.0,
+                        format="%.2f",
+                    ),
+                    "rate": st.column_config.NumberColumn(
+                        "Rate",
+                        min_value=0.0,
+                        step=100.0,
+                        format="%.2f",
+                    ),
+                    "discount": st.column_config.NumberColumn(
+                        "Discount (%)",
+                        help="Discount percentage for this line item",
+                        min_value=0.0,
+                        max_value=100.0,
+                        step=0.5,
+                        format="%.2f",
+                    ),
+                    "line_total": st.column_config.NumberColumn(
+                        "Amount",
+                        help="Quantity × rate after discount (read only)",
+                        format="%.2f",
+                        disabled=True,
+                    ),
+                },
+            )
+            edited_items = items_editor.copy()
+            edited_items["line_total"] = edited_items.apply(_compute_line_total, axis=1)
+            st.session_state["quotation_item_rows"] = edited_items.to_dict("records")
 
-        items_editor = st.data_editor(
-            items_df_seed,
-            num_rows="dynamic",
-            hide_index=True,
-            key="quotation_items_table",
-            use_container_width=True,
-            column_config={
-                "description": st.column_config.TextColumn(
-                    "Tracked products",
-                    help="Describe the item or service",
-                ),
-                "kva": st.column_config.TextColumn(
-                    "kVA / Capacity", help="Power rating for the item"
-                ),
-                "specs": st.column_config.TextColumn(
-                    "Specs", help="Key specifications or notes"
-                ),
-                "quantity": st.column_config.NumberColumn(
-                    "Quantity",
-                    min_value=0.0,
-                    step=1.0,
-                    format="%.2f",
-                ),
-                "rate": st.column_config.NumberColumn(
-                    "Rate",
-                    min_value=0.0,
-                    step=100.0,
-                    format="%.2f",
-                ),
-                "discount": st.column_config.NumberColumn(
-                    "Discount (%)",
-                    help="Discount percentage for this line item",
-                    min_value=0.0,
-                    max_value=100.0,
-                    step=0.5,
-                    format="%.2f",
-                ),
-                "line_total": st.column_config.NumberColumn(
-                    "Amount",
-                    help="Quantity × rate after discount (read only)",
-                    format="%.2f",
-                    disabled=True,
-                ),
-            },
-        )
-        edited_items = items_editor.copy()
-        edited_items["line_total"] = edited_items.apply(_compute_line_total, axis=1)
-        st.session_state["quotation_item_rows"] = edited_items.to_dict("records")
-
-        closing_text = st.text_area(
-            "Closing / thanks",
-            value=st.session_state.get("quotation_closing") or "With Thanks & Kind Regards",
-            key="quotation_closing",
-        )
-
-        status_value = st.selectbox(
-            "Quotation status",
-            status_choices,
-            format_func=lambda val: val.title(),
-            key="quotation_status",
-        )
-
-        receipt_upload = None
-        if status_value == "paid":
-            receipt_upload = st.file_uploader(
-                "Payment receipt (PDF or image)",
-                type=["pdf", "png", "jpg", "jpeg", "webp"],
-                key="quotation_receipt_upload",
-                help="Attach proof of payment to lock in this quotation.",
+            closing_text = st.text_area(
+                "Closing / thanks",
+                value=st.session_state.get("quotation_closing") or "With Thanks & Kind Regards",
+                key="quotation_closing",
             )
 
-        follow_up_status = st.selectbox(
-            "Salesperson follow-up status",
-            ["Possible", "Hot", "Cold", "Closed", "No response"],
-            key="quotation_follow_up_status",
-        )
-        follow_up_notes = st.text_area(
-            "Salesperson follow-up notes",
-            value=st.session_state.get("quotation_follow_up_notes", ""),
-            key="quotation_follow_up_notes",
-        )
-
-        follow_up_choice_default = st.session_state.get("quotation_follow_up_choice") or list(follow_up_presets.keys())[0]
-        follow_up_choice = follow_up_choice_default
-        follow_up_date_value = st.session_state.get("quotation_follow_up_date") or (default_date + timedelta(days=3))
-        if status_value != "paid":
-            follow_up_choice = st.radio(
-                "Suggested follow-up timing",
-                list(follow_up_presets.keys()),
-                horizontal=True,
-                key="quotation_follow_up_choice",
+            status_value = st.selectbox(
+                "Quotation status",
+                status_choices,
+                format_func=lambda val: val.title(),
+                key="quotation_status",
             )
-            follow_up_date_value = st.date_input(
-                "Follow-up date",
-                value=follow_up_date_value,
-                key="quotation_follow_up_date",
-            )
-        else:
-            st.caption("Follow-up dates are hidden because this quotation is already paid.")
-            st.session_state.setdefault("quotation_follow_up_choice", follow_up_choice_default)
-            st.session_state.pop("quotation_follow_up_date", None)
 
-        action_cols = st.columns([1, 1])
-        submit = action_cols[0].form_submit_button(
-            "Create quotation", type="primary", use_container_width=True
-        )
-        reset = action_cols[1].form_submit_button("Reset form", use_container_width=True)
+            receipt_upload = None
+            if status_value == "paid":
+                receipt_upload = st.file_uploader(
+                    "Payment receipt (PDF or image)",
+                    type=["pdf", "png", "jpg", "jpeg", "webp"],
+                    key="quotation_receipt_upload",
+                    help="Attach proof of payment to lock in this quotation.",
+                )
 
-        if reset:
-            _reset_quotation_form_state()
-            st.session_state["quotation_feedback"] = (
-                "info",
-                "Quotation form reset to defaults.",
+            follow_up_status = st.selectbox(
+                "Salesperson follow-up status",
+                ["Possible", "Hot", "Cold", "Closed", "No response"],
+                key="quotation_follow_up_status",
             )
-            st.toast("Quotation form reset", icon="ℹ️")
-            _safe_rerun()
+            follow_up_notes = st.text_area(
+                "Salesperson follow-up notes",
+                value=st.session_state.get("quotation_follow_up_notes", ""),
+                key="quotation_follow_up_notes",
+            )
+
+            follow_up_choice_default = st.session_state.get("quotation_follow_up_choice") or list(follow_up_presets.keys())[0]
+            follow_up_choice = follow_up_choice_default
+            follow_up_date_value = st.session_state.get("quotation_follow_up_date") or (default_date + timedelta(days=3))
+            if status_value != "paid":
+                follow_up_choice = st.radio(
+                    "Suggested follow-up timing",
+                    list(follow_up_presets.keys()),
+                    horizontal=True,
+                    key="quotation_follow_up_choice",
+                )
+                follow_up_date_value = st.date_input(
+                    "Follow-up date",
+                    value=follow_up_date_value,
+                    key="quotation_follow_up_date",
+                )
+            else:
+                st.caption("Follow-up dates are hidden because this quotation is already paid.")
+                st.session_state.setdefault("quotation_follow_up_choice", follow_up_choice_default)
+                st.session_state.pop("quotation_follow_up_date", None)
+
+            action_cols = st.columns([1, 1])
+            submit = action_cols[0].form_submit_button(
+                "Create quotation", type="primary", use_container_width=True
+            )
+            reset = action_cols[1].form_submit_button("Reset form", use_container_width=True)
+
+            if reset:
+                _reset_quotation_form_state()
+                st.session_state["quotation_feedback"] = (
+                    "info",
+                    "Quotation form reset to defaults.",
+                )
+                st.toast("Quotation form reset", icon="ℹ️")
+                _safe_rerun()
 
     if st.session_state.get("quotation_autofill_customer"):
         seed = autofill_records.get(int(st.session_state["quotation_autofill_customer"]))
