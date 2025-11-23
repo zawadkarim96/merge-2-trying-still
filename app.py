@@ -7080,6 +7080,9 @@ def _update_quotation_records(conn, updates: Iterable[dict[str, object]]) -> dic
             or clean_text(row[4])
         )
         receipt_path = clean_text(entry.get("payment_receipt_path")) or clean_text(row[5])
+        if status_value == "paid" and not receipt_path:
+            locked.append(quotation_id)
+            continue
         conn.execute(
             """
             UPDATE quotations
@@ -7641,17 +7644,21 @@ def _render_quotation_section(conn):
             totals=preview_totals,
         )
 
-    if submit:
-        item_records = st.session_state.get("quotation_item_rows", [])
-        prepared_items = [dict(item) for item in item_records]
-        for item in prepared_items:
-            if item.get("discount") in (None, ""):
-                item["discount"] = default_discount
+        if submit:
+            item_records = st.session_state.get("quotation_item_rows", [])
+            prepared_items = [dict(item) for item in item_records]
+            for item in prepared_items:
+                if item.get("discount") in (None, ""):
+                    item["discount"] = default_discount
 
-        items_clean, totals_data = normalize_quotation_items(prepared_items)
-        if not items_clean:
-            st.error("Add at least one item with a description to create a quotation.")
-            return
+            if status_value == "paid" and not receipt_upload:
+                st.error("Upload a payment receipt before saving this quotation as paid.")
+                return
+
+            items_clean, totals_data = normalize_quotation_items(prepared_items)
+            if not items_clean:
+                st.error("Add at least one item with a description to create a quotation.")
+                return
 
         reminder_days = follow_up_presets.get(follow_up_choice) if status_value != "paid" else None
         follow_up_date = follow_up_date_value if status_value != "paid" else None
@@ -7889,39 +7896,33 @@ def _render_quotation_section(conn):
                         key="quotation_receipt_download",
                     )
 
-        if result.get("pdf_bytes"):
-            st.download_button(
-                "Download PDF (letterhead)",
-                data=result["pdf_bytes"],
-                file_name=f"{Path(result['filename']).stem}.pdf",
-                mime="application/pdf",
-                key="quotation_pdf_download",
-            )
-
-        st.download_button(
-            "Download Excel copy",
-            data=result["excel_bytes"],
-            file_name=result["filename"],
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="quotation_download",
-        )
-
+        download_data: Optional[bytes] = None
+        download_name: Optional[str] = None
+        download_mime = "application/pdf"
         saved_doc_path = result.get("document_path")
         if saved_doc_path:
             saved_doc = BASE_DIR / saved_doc_path
             if saved_doc.exists():
                 try:
-                    saved_bytes = saved_doc.read_bytes()
+                    download_data = saved_doc.read_bytes()
+                    download_name = saved_doc.name
                 except OSError:
-                    saved_bytes = None
-                if saved_bytes:
-                    st.download_button(
-                        "Download saved PDF copy",
-                        data=saved_bytes,
-                        file_name=saved_doc.name,
-                        mime="application/pdf",
-                        key="quotation_saved_download",
-                    )
+                    download_data = None
+                    download_name = None
+
+        if download_data is None and result.get("pdf_bytes"):
+            download_data = result["pdf_bytes"]
+            download_name = f"{Path(result['filename']).stem}.pdf"
+
+        if download_data and download_name:
+            st.download_button(
+                "DOWNLOAD QUOTATION",
+                data=download_data,
+                file_name=download_name,
+                mime=download_mime,
+                key="quotation_download_primary",
+                type="primary",
+            )
 
 
 def _render_quotation_management(conn):
@@ -8126,6 +8127,126 @@ def _render_quotation_management(conn):
             use_container_width=True,
             hide_index=True,
         )
+
+    st.markdown("#### Update saved quotation details")
+    detail_labels: dict[int, str] = {}
+    for _, row in quotes_df.iterrows():
+        try:
+            detail_id = int(row.get("quotation_id"))
+        except Exception:
+            continue
+        reference = clean_text(row.get("reference")) or f"Quotation #{detail_id}"
+        customer = clean_text(row.get("customer_company")) or clean_text(
+            row.get("customer_contact")
+        )
+        detail_labels[detail_id] = " • ".join(
+            part for part in [reference, customer] if part
+        )
+
+    detail_choices = list(detail_labels.keys())
+    if not detail_choices:
+        st.info("No quotations available to edit.")
+        return
+
+    selected_detail_id = st.selectbox(
+        "Select a quotation",
+        detail_choices,
+        format_func=lambda val: detail_labels.get(val, f"Quotation #{val}"),
+        key="quotation_detail_select",
+    )
+
+    selected_row = quotes_df[
+        quotes_df["quotation_id"] == selected_detail_id
+    ].iloc[0]
+    selected_status = clean_text(selected_row.get("status")) or "pending"
+    existing_receipt = clean_text(selected_row.get("payment_receipt_path"))
+    follow_up_status_value = clean_text(selected_row.get("follow_up_status")) or ""
+    follow_up_notes_value = clean_text(selected_row.get("follow_up_notes")) or ""
+    follow_up_date_seed = selected_row.get("follow_up_date")
+    if isinstance(follow_up_date_seed, pd.Timestamp):
+        follow_up_date_seed = follow_up_date_seed.date()
+
+    col_left, col_right = st.columns(2)
+    with col_left:
+        follow_up_status_input = st.text_input(
+            "Follow-up status",
+            value=follow_up_status_value,
+            key="quotation_detail_follow_up_status",
+        )
+        clear_follow_up_date = st.checkbox(
+            "No follow-up date",
+            value=follow_up_date_seed is None,
+            key="quotation_detail_clear_date",
+        )
+        follow_up_date_input: Optional[date] = None
+        if not clear_follow_up_date:
+            follow_up_date_input = st.date_input(
+                "Follow-up date",
+                value=follow_up_date_seed or date.today(),
+                key="quotation_detail_follow_up_date",
+                format="%d-%m-%Y",
+            )
+    with col_right:
+        follow_up_notes_input = st.text_area(
+            "Follow-up notes",
+            value=follow_up_notes_value,
+            key="quotation_detail_follow_up_notes",
+        )
+        receipt_upload = None
+        if selected_status == "paid":
+            receipt_upload = st.file_uploader(
+                "Attach receipt for this paid quotation",
+                type=["pdf", "png", "jpg", "jpeg", "webp"],
+                key=f"quotation_detail_receipt_{selected_detail_id}",
+            )
+            if not (receipt_upload or existing_receipt):
+                st.caption("Upload a receipt to keep this paid quotation locked.")
+
+    if st.button("Update quotation details", type="primary", key="quotation_detail_save"):
+        receipt_path = existing_receipt
+        if selected_status == "paid":
+            if receipt_upload:
+                safe_ref = _sanitize_path_component(
+                    clean_text(selected_row.get("reference"))
+                    or f"quotation_{selected_detail_id}"
+                )
+                receipt_path = store_payment_receipt(
+                    receipt_upload, identifier=f"{safe_ref}_receipt"
+                )
+            if not receipt_path:
+                st.error("Upload a receipt before saving a paid quotation.")
+                return
+
+        follow_up_iso = to_iso_date(follow_up_date_input) if follow_up_date_input else None
+        reminder_label = (
+            format_period_range(follow_up_iso, follow_up_iso)
+            if follow_up_iso
+            else clean_text(selected_row.get("reminder_label"))
+        )
+
+        conn.execute(
+            """
+            UPDATE quotations
+               SET follow_up_status=?,
+                   follow_up_notes=?,
+                   follow_up_date=?,
+                   reminder_label=?,
+                   payment_receipt_path=COALESCE(?, payment_receipt_path),
+                   updated_at=datetime('now')
+             WHERE quotation_id=?
+            """,
+            (
+                clean_text(follow_up_status_input) or None,
+                clean_text(follow_up_notes_input) or None,
+                follow_up_iso,
+                reminder_label,
+                receipt_path,
+                selected_detail_id,
+            ),
+        )
+        conn.commit()
+        st.success("Quotation details updated.")
+        _safe_rerun()
 
 
 def advanced_search_page(conn):
