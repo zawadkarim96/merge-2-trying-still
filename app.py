@@ -358,6 +358,10 @@ NOTIFICATION_EVENT_LABELS = {
     "warranty_updated": "Warranty updated",
     "report_submitted": "Report submitted",
     "report_updated": "Report updated",
+    "delivery_order_created": "Delivery order saved",
+    "delivery_order_updated": "Delivery order updated",
+    "work_done_created": "Work done saved",
+    "work_done_updated": "Work done updated",
 }
 
 
@@ -2262,6 +2266,31 @@ def dedupe_join(values: Iterable[Optional[str]]) -> str:
     return ", ".join(seen)
 
 
+def join_with_counts(values: Iterable[Optional[str]]) -> str:
+    """Join values with commas, annotating duplicates with counts."""
+
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        cleaned = str(value).strip()
+        if not cleaned:
+            continue
+        counts[cleaned] = counts.get(cleaned, 0) + 1
+        if cleaned not in order:
+            order.append(cleaned)
+
+    parts: list[str] = []
+    for item in order:
+        count = counts.get(item, 0)
+        if count > 1:
+            parts.append(f"{item} (x{count})")
+        else:
+            parts.append(item)
+    return ", ".join(parts)
+
+
 def merge_customer_records(conn, customer_ids) -> bool:
     ids = []
     for cid in customer_ids:
@@ -2320,6 +2349,7 @@ def merge_customer_records(conn, customer_ids) -> bool:
     product_lines = []
     fallback_products = []
     purchase_dates = []
+    purchase_labels = []
     sales_people = []
 
     for record in df.to_dict("records"):
@@ -2337,6 +2367,8 @@ def merge_customer_records(conn, customer_ids) -> bool:
             date_label = dt.strftime(DATE_FMT)
         else:
             date_label = date_raw
+        if date_label:
+            purchase_labels.append(date_label)
         if date_label and product_raw:
             product_lines.append(f"{date_label} – {product_raw}")
         elif product_raw:
@@ -2347,9 +2379,10 @@ def merge_customer_records(conn, customer_ids) -> bool:
             sales_people.append(sales_raw)
 
     earliest_purchase = min(purchase_dates).strftime("%Y-%m-%d") if purchase_dates else None
-    combined_products = dedupe_join(product_lines or fallback_products)
-    combined_do_codes = dedupe_join(do_codes)
-    combined_sales = dedupe_join(sales_people)
+    combined_products = join_with_counts(product_lines or fallback_products)
+    combined_do_codes = join_with_counts(do_codes)
+    combined_sales = join_with_counts(sales_people)
+    combined_purchase_labels = join_with_counts(purchase_labels)
 
     conn.execute(
         """
@@ -2365,7 +2398,7 @@ def merge_customer_records(conn, customer_ids) -> bool:
             base_delivery_address,
             clean_text(combined_remarks),
             earliest_purchase,
-            clean_text(combined_products),
+            clean_text(combined_products or combined_purchase_labels),
             clean_text(combined_do_codes),
             clean_text(combined_sales),
             base_id,
@@ -2393,6 +2426,42 @@ def merge_customer_records(conn, customer_ids) -> bool:
             recalc_customer_duplicate_flag(conn, phone)
     conn.commit()
     return True
+
+
+def auto_merge_matching_customers(conn) -> bool:
+    """Automatically merge customers sharing the same name and address."""
+
+    df = df_query(
+        conn,
+        dedent(
+            """
+            SELECT customer_id, name, company_name, phone, address, delivery_address,
+                   purchase_date, product_info, delivery_order_code, sales_person, remarks, created_at
+            FROM customers
+            WHERE TRIM(COALESCE(name, '')) <> '' AND TRIM(COALESCE(address, '')) <> ''
+            """
+        ),
+    )
+    if df.empty:
+        return False
+
+    def _normalize(value: object) -> str:
+        cleaned = clean_text(value) or ""
+        return " ".join(cleaned.lower().split())
+
+    df["_name_norm"] = df.get("name", pd.Series(dtype=object)).apply(_normalize)
+    df["_address_norm"] = df.get("address", pd.Series(dtype=object)).apply(_normalize)
+
+    merged_any = False
+    grouped = df.groupby(["_name_norm", "_address_norm"], dropna=False)
+    for _, group in grouped:
+        ids = [int(cid) for cid in group.get("customer_id", []) if int_or_none(cid) is not None]
+        if len(ids) < 2:
+            continue
+        if merge_customer_records(conn, ids):
+            merged_any = True
+
+    return merged_any
 
 
 def delete_customer_record(conn, customer_id: int) -> None:
@@ -2474,6 +2543,12 @@ def collapse_warranty_rows(df: pd.DataFrame) -> pd.DataFrame:
         work["remarks_clean"] = work["remarks"].apply(clean_text)
     else:
         work["remarks_clean"] = None
+    if "staff" in work.columns:
+        work["staff_clean"] = work["staff"].apply(clean_text)
+    elif "sales_person" in work.columns:
+        work["staff_clean"] = work["sales_person"].apply(clean_text)
+    else:
+        work["staff_clean"] = None
     issue_dt = pd.to_datetime(work.get("issue_date"), errors="coerce")
     expiry_dt = pd.to_datetime(work.get("expiry_date"), errors="coerce")
     work["issue_fmt"] = issue_dt.dt.strftime(DATE_FMT)
@@ -2491,6 +2566,7 @@ def collapse_warranty_rows(df: pd.DataFrame) -> pd.DataFrame:
                     "issue_date": dedupe_join(g["issue_fmt"].tolist()),
                     "expiry_date": dedupe_join(g["expiry_fmt"].tolist()),
                     "remarks": dedupe_join(g["remarks_clean"].tolist()),
+                    "staff": dedupe_join(g.get("staff_clean", pd.Series(dtype=object)).tolist()),
                     "_sort": g["expiry_dt"].min(),
                 }
             )
@@ -2505,6 +2581,7 @@ def collapse_warranty_rows(df: pd.DataFrame) -> pd.DataFrame:
             "issue_date": "Issue date",
             "expiry_date": "Expiry date",
             "remarks": "Remarks",
+            "staff": "Staff",
         },
         inplace=True,
     )
@@ -2853,10 +2930,12 @@ def fetch_warranty_window(conn, start_days: int, end_days: int) -> pd.DataFrame:
     where_clause = " AND ".join(filters)
     query = dedent(
         f"""
-        SELECT c.name AS customer, p.name AS product, p.model, w.serial, w.issue_date, w.expiry_date, w.remarks
+        SELECT c.name AS customer, p.name AS product, p.model, w.serial, w.issue_date, w.expiry_date, w.remarks,
+               COALESCE(c.sales_person, u.username) AS staff
         FROM warranties w
         LEFT JOIN customers c ON c.customer_id = w.customer_id
         LEFT JOIN products p ON p.product_id = w.product_id
+        LEFT JOIN users u ON u.user_id = c.created_by
         WHERE {where_clause}
         ORDER BY date(w.expiry_date) ASC
         """
@@ -2902,6 +2981,7 @@ def format_warranty_table(df: pd.DataFrame) -> pd.DataFrame:
         "issue_date": "Issue date",
         "expiry_date": "Expiry date",
         "remarks": "Remarks",
+        "staff": "Staff",
     }
     work.rename(columns={k: v for k, v in rename_map.items() if k in work.columns}, inplace=True)
     for col in ("dup_flag", "id", "duplicate"):
@@ -3764,10 +3844,12 @@ def dashboard(conn):
     today_expired_df = df_query(
         conn,
         """
-        SELECT c.name AS customer, p.name AS product, p.model, w.serial, w.issue_date, w.expiry_date
+        SELECT c.name AS customer, p.name AS product, p.model, w.serial, w.issue_date, w.expiry_date,
+               COALESCE(c.sales_person, u.username) AS staff
         FROM warranties w
         LEFT JOIN customers c ON c.customer_id = w.customer_id
         LEFT JOIN products p ON p.product_id = w.product_id
+        LEFT JOIN users u ON u.user_id = c.created_by
         WHERE w.status='active' AND date(w.expiry_date) = date('now')
         ORDER BY date(w.expiry_date) ASC
         """,
@@ -3799,10 +3881,13 @@ def dashboard(conn):
         for _, row in notice.iterrows():
             customer = row.get("Customer") or "(unknown)"
             description = row.get("Description") or ""
+            staff_label = row.get("Staff") or ""
             if description:
-                lines.append(f"- {customer}: {description}")
+                staff_note = f" (by {staff_label})" if staff_label else ""
+                lines.append(f"- {customer}: {description}{staff_note}")
             else:
-                lines.append(f"- {customer}")
+                staff_note = f" (by {staff_label})" if staff_label else ""
+                lines.append(f"- {customer}{staff_note}")
         st.warning("⚠️ Warranties expiring today:\n" + "\n".join(lines))
 
     show_today_expired = st.session_state.get("show_today_expired")
@@ -5590,10 +5675,12 @@ def warranties_page(conn):
     base = dedent(
         """
         SELECT w.warranty_id as id, c.name as customer, p.name as product, p.model, w.serial,
-               w.issue_date, w.expiry_date, w.status, w.remarks, w.dup_flag
+               w.issue_date, w.expiry_date, w.status, w.remarks, w.dup_flag,
+               COALESCE(c.sales_person, u.username) AS staff
         FROM warranties w
         LEFT JOIN customers c ON c.customer_id = w.customer_id
         LEFT JOIN products p ON p.product_id = w.product_id
+        LEFT JOIN users u ON u.user_id = c.created_by
         WHERE {filters}
         ORDER BY date(w.expiry_date) {order}
         """
@@ -8633,7 +8720,9 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
         st.info("No maintenance records yet. Log one using the form above.")
 
 
-def delivery_orders_page(conn, *, show_heading: bool = True):
+def delivery_orders_page(
+    conn, *, show_heading: bool = True, record_type_label: str = "Delivery order"
+):
     if show_heading:
         st.subheader("🚚 Delivery orders")
 
@@ -8680,7 +8769,9 @@ def delivery_orders_page(conn, *, show_heading: bool = True):
             load_choices.append(do_num)
             load_labels[do_num] = f"{do_num} • {customer_name}"
 
-    st.markdown("### Create or update a delivery order")
+    record_label = clean_text(record_type_label) or "Delivery order"
+
+    st.markdown(f"### Create or update a {record_label.lower()}")
     selected_existing = st.selectbox(
         "Load existing delivery order",
         load_choices,
@@ -8703,7 +8794,7 @@ def delivery_orders_page(conn, *, show_heading: bool = True):
 
     with st.form("delivery_order_form"):
         do_number = st.text_input(
-            "Delivery order number *",
+            f"{record_label} number *",
             value=st.session_state.get("delivery_order_number", ""),
             key="delivery_order_number",
         )
@@ -8765,16 +8856,16 @@ def delivery_orders_page(conn, *, show_heading: bool = True):
             f"Estimated total: {format_money(estimated_total) or f'{estimated_total:,.2f}'}"
         )
         do_file = st.file_uploader(
-            "Attach delivery order (PDF)",
+            f"Attach {record_label.lower()} (PDF)",
             type=["pdf"],
             help="Optional supporting document stored alongside the record.",
         )
-        submit = st.form_submit_button("Save delivery order", type="primary")
+        submit = st.form_submit_button(f"Save {record_label.lower()}", type="primary")
 
     if submit:
         cleaned_number = clean_text(do_number)
         if not cleaned_number:
-            st.error("Delivery order number is required.")
+            st.error(f"{record_label} number is required.")
         else:
             cur = conn.cursor()
             existing = df_query(
@@ -8840,7 +8931,27 @@ def delivery_orders_page(conn, *, show_heading: bool = True):
             if selected_customer:
                 link_delivery_order_to_customer(conn, cleaned_number, int(selected_customer))
             conn.commit()
-            st.success(f"Delivery order {cleaned_number} saved successfully.")
+            action_label = "updated" if not existing.empty else "created"
+            customer_display = customer_labels.get(
+                int(selected_customer) if selected_customer else None, "(customer)"
+            )
+            total_display = format_money(total_amount_value) or f"{_coerce_float(total_amount_value, 0.0):,.2f}"
+            event_prefix = record_label.lower().replace(" ", "_") or "delivery_order"
+            event_type = f"{event_prefix}_{'updated' if not existing.empty else 'created'}"
+            entity_type = "work_done" if event_prefix == "work_done" else "delivery_order"
+
+            log_activity(
+                conn,
+                event_type=event_type,
+                description=(
+                    f"{record_label} {cleaned_number} {action_label} for {customer_display}"
+                    f" ({total_display})"
+                ),
+                entity_type=entity_type,
+                entity_id=None,
+            )
+
+            st.success(f"{record_label} {cleaned_number} saved successfully.")
 
     st.markdown("### Delivery order search")
     filter_cols = st.columns((1.2, 1, 1, 1))
@@ -8995,7 +9106,7 @@ def quotation_page(conn):
 def work_done_page(conn):
     st.subheader("✅ Work done")
     st.caption("Create, update, and download work completion slips just like delivery orders.")
-    delivery_orders_page(conn, show_heading=False)
+    delivery_orders_page(conn, show_heading=False, record_type_label="Work done")
 
 
 def service_maintenance_page(conn):
@@ -9929,22 +10040,29 @@ def manual_merge_section(conn, customers_df: pd.DataFrame) -> None:
         return f"#{row['id']} – {name_val} | Phone: {phone_val} | Date: {date_label} | Product: {product_val} | DO: {do_val}"
 
     work_df["_label"] = work_df.apply(build_label, axis=1)
-    work_df["_search_blob"] = work_df.apply(
-        lambda row: " ".join(
-            filter(
-                None,
-                [
-                    clean_text(row.get("name")),
-                    clean_text(row.get("phone")),
-                    clean_text(row.get("address")),
-                    clean_text(row.get("product_info")),
-                    clean_text(row.get("delivery_order_code")),
-                ],
-            )
-        ),
-        axis=1,
-    )
-    work_df["_search_blob"] = work_df["_search_blob"].fillna("").str.lower()
+    def _compose_search_blob(row) -> str:
+        fields = [
+            row.get("name"),
+            row.get("company_name"),
+            row.get("phone"),
+            row.get("address"),
+            row.get("delivery_address"),
+            row.get("product_info"),
+            row.get("delivery_order_code"),
+            row.get("remarks"),
+            row.get("sales_person"),
+            row.get("purchase_date"),
+        ]
+        cleaned: list[str] = []
+        for value in fields:
+            text = clean_text(value)
+            if not text:
+                continue
+            cleaned.append(" ".join(text.split()))
+        return " ".join(cleaned).lower()
+
+    work_df["_search_blob"] = work_df.apply(_compose_search_blob, axis=1)
+    work_df["_search_blob"] = work_df["_search_blob"].fillna("")
 
     label_map = {row["id"]: row["_label"] for row in work_df.to_dict("records")}
 
@@ -9959,11 +10077,13 @@ def manual_merge_section(conn, customers_df: pd.DataFrame) -> None:
         "Filter customers by name, phone, address, product, or DO (optional)",
         key="manual_merge_filter",
     ).strip()
+    filter_normalized = " ".join(filter_value.lower().split())
 
     filtered_df = work_df
-    if filter_value:
-        escaped = re.escape(filter_value.lower())
-        mask = filtered_df["_search_blob"].str.contains(escaped, regex=True, na=False)
+    if filter_normalized:
+        mask = filtered_df["_search_blob"].str.contains(
+            filter_normalized, regex=False, na=False
+        )
         filtered_df = filtered_df[mask]
 
     options = filtered_df["id"].tolist()
@@ -10032,6 +10152,13 @@ def manual_merge_section(conn, customers_df: pd.DataFrame) -> None:
 
 def duplicates_page(conn):
     st.subheader("⚠️ Possible Duplicates")
+    if auto_merge_matching_customers(conn):
+        st.info(
+            "Automatically merged customers sharing the same name and address.",
+            icon="✅",
+        )
+        _safe_rerun()
+        return
     scope_clause, scope_params = customer_scope_filter("c")
     where_sql = f"WHERE {scope_clause}" if scope_clause else ""
     cust_raw = df_query(
