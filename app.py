@@ -62,6 +62,7 @@ CUSTOMER_DOCS_DIR = UPLOADS_DIR / "customer_documents"
 SERVICE_BILL_DIR = UPLOADS_DIR / "service_bills"
 REPORT_DOCS_DIR = UPLOADS_DIR / "report_documents"
 QUOTATION_RECEIPT_DIR = UPLOADS_DIR / "quotation_receipts"
+DELIVERY_RECEIPT_DIR = UPLOADS_DIR / "delivery_receipts"
 
 DEFAULT_QUOTATION_VALID_DAYS = 30
 
@@ -356,6 +357,7 @@ NOTIFICATION_EVENT_LABELS = {
     "maintenance_created": "Maintenance created",
     "maintenance_updated": "Maintenance updated",
     "quotation_created": "Quotation created",
+    "quotation_updated": "Quotation updated",
     "warranty_updated": "Warranty updated",
     "report_submitted": "Report submitted",
     "report_updated": "Report updated",
@@ -456,7 +458,10 @@ CREATE TABLE IF NOT EXISTS delivery_orders (
     sales_person TEXT,
     remarks TEXT,
     file_path TEXT,
+    status TEXT DEFAULT 'pending',
+    payment_receipt_path TEXT,
     created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY(customer_id) REFERENCES customers(customer_id) ON DELETE SET NULL,
     FOREIGN KEY(order_id) REFERENCES orders(order_id) ON DELETE SET NULL
 );
@@ -691,6 +696,9 @@ def ensure_schema_upgrades(conn):
     add_column("delivery_orders", "items_payload", "TEXT")
     add_column("delivery_orders", "total_amount", "REAL")
     add_column("delivery_orders", "created_by", "INTEGER")
+    add_column("delivery_orders", "status", "TEXT DEFAULT 'pending'")
+    add_column("delivery_orders", "payment_receipt_path", "TEXT")
+    add_column("delivery_orders", "updated_at", "TEXT DEFAULT (datetime('now'))")
     add_column("import_history", "amount_spent", "REAL")
     add_column("import_history", "imported_by", "INTEGER")
     add_column("import_history", "delivery_address", "TEXT")
@@ -1936,6 +1944,7 @@ def ensure_upload_dirs():
         SERVICE_BILL_DIR,
         REPORT_DOCS_DIR,
         QUOTATION_RECEIPT_DIR,
+        DELIVERY_RECEIPT_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)
 
@@ -1995,15 +2004,20 @@ def store_uploaded_pdf(uploaded_file, target_dir: Path, filename: Optional[str] 
         return str(saved_path)
 
 
-def store_payment_receipt(uploaded_file, *, identifier: Optional[str] = None) -> Optional[str]:
-    """Persist an uploaded receipt (PDF or image) for paid quotations."""
+def store_payment_receipt(
+    uploaded_file,
+    *,
+    identifier: Optional[str] = None,
+    target_dir: Path = QUOTATION_RECEIPT_DIR,
+) -> Optional[str]:
+    """Persist an uploaded receipt (PDF or image) for paid records."""
 
     if uploaded_file is None:
         return None
     filename = identifier or uploaded_file.name or "receipt"
     saved_path = save_uploaded_file(
         uploaded_file,
-        QUOTATION_RECEIPT_DIR,
+        target_dir,
         filename=filename,
         allowed_extensions={".pdf", ".png", ".jpg", ".jpeg", ".webp"},
         default_extension=".pdf",
@@ -7029,19 +7043,43 @@ def _persist_quotation_pdf(
         return None
 
 
-def _update_quotation_records(conn, updates: Iterable[dict[str, object]]) -> None:
+def _update_quotation_records(conn, updates: Iterable[dict[str, object]]) -> dict[str, list[int]]:
+    updated: list[int] = []
+    locked: list[int] = []
     for entry in updates:
         try:
             quotation_id = int(entry.get("quotation_id"))
         except Exception:
             continue
-        status_value = clean_text(entry.get("status")) or "pending"
-        follow_up_date = None if status_value == "paid" else to_iso_date(entry.get("follow_up_date"))
+        cur = conn.execute(
+            """
+            SELECT status, follow_up_status, follow_up_notes, follow_up_date, reminder_label,
+                   payment_receipt_path, reference
+            FROM quotations
+            WHERE quotation_id=?
+            """,
+            (quotation_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            continue
+        current_status = clean_text(row[0]) or "pending"
+        if current_status in {"paid", "rejected"}:
+            locked.append(quotation_id)
+            continue
+        status_value = clean_text(entry.get("status")) or current_status
+        follow_up_status = clean_text(entry.get("follow_up_status")) or clean_text(row[1])
+        follow_up_notes = clean_text(entry.get("follow_up_notes")) or clean_text(row[2])
+        follow_up_date = None
+        if status_value != "paid":
+            follow_up_date = to_iso_date(entry.get("follow_up_date") or row[3])
         reminder_label = (
             "Payment marked as received; follow-up reminders disabled."
             if status_value == "paid"
             else clean_text(entry.get("reminder_label"))
+            or clean_text(row[4])
         )
+        receipt_path = clean_text(entry.get("payment_receipt_path")) or clean_text(row[5])
         conn.execute(
             """
             UPDATE quotations
@@ -7050,19 +7088,33 @@ def _update_quotation_records(conn, updates: Iterable[dict[str, object]]) -> Non
                 follow_up_notes=?,
                 follow_up_date=?,
                 reminder_label=?,
+                payment_receipt_path=COALESCE(?, payment_receipt_path),
                 updated_at=datetime('now')
             WHERE quotation_id=?
             """,
             (
                 status_value,
-                clean_text(entry.get("follow_up_status")),
-                clean_text(entry.get("follow_up_notes")),
+                follow_up_status,
+                follow_up_notes,
                 follow_up_date,
                 reminder_label,
+                receipt_path,
                 quotation_id,
             ),
         )
+        updated.append(quotation_id)
+        reference_label = clean_text(row[6]) or f"Quotation #{quotation_id}"
+        if status_value != current_status:
+            receipt_note = " with receipt" if receipt_path and status_value == "paid" else ""
+            log_activity(
+                conn,
+                event_type="quotation_updated",
+                description=f"{reference_label} marked as {status_value}{receipt_note}",
+                entity_type="quotation",
+                entity_id=quotation_id,
+            )
     conn.commit()
+    return {"updated": updated, "locked": locked}
 
 
 def _render_quotation_section(conn):
@@ -7118,7 +7170,9 @@ def _render_quotation_section(conn):
                 cid = int(row.get("customer_id"))
             except Exception:
                 continue
-            label_parts = [clean_text(row.get("name")) or clean_text(row.get("company_name"))]
+            company_label = clean_text(row.get("company_name"))
+            contact_label = clean_text(row.get("name"))
+            label_parts = [company_label or contact_label]
             phone_val = clean_text(row.get("phone"))
             if phone_val:
                 label_parts.append(phone_val)
@@ -7206,6 +7260,12 @@ def _render_quotation_section(conn):
     if autofill_customer:
         seed = autofill_records.get(int(autofill_customer))
         if seed:
+            if not st.session_state.get("quotation_customer_name"):
+                st.session_state["quotation_customer_name"] = (
+                    clean_text(seed.get("name"))
+                    or clean_text(seed.get("company_name"))
+                    or ""
+                )
             if not st.session_state.get("quotation_company_name"):
                 st.session_state["quotation_company_name"] = (
                     clean_text(seed.get("company_name"))
@@ -7220,6 +7280,12 @@ def _render_quotation_section(conn):
                 st.session_state["quotation_customer_address"] = (
                     clean_text(seed.get("delivery_address"))
                     or clean_text(seed.get("address"))
+                    or ""
+                )
+            if not st.session_state.get("quotation_attention_name"):
+                st.session_state["quotation_attention_name"] = (
+                    clean_text(seed.get("name"))
+                    or clean_text(seed.get("company_name"))
                     or ""
                 )
             if not st.session_state.get("quotation_customer_district"):
@@ -7779,92 +7845,83 @@ def _render_quotation_section(conn):
         st.success("Quotation ready. Review the details below or download the PDF and Excel copies.")
         metadata_df = pd.DataFrame(result["metadata_items"], columns=["Field", "Value"])
         grand_total_label = format_money(result["grand_total"]) or f"{result['grand_total']:,.2f}"
+        st.markdown("##### Quotation summary")
+        st.dataframe(metadata_df, use_container_width=True, hide_index=True)
 
-        summary_cols = st.columns([1, 1.2])
-        with summary_cols[0]:
-            st.markdown("##### Quotation summary")
-            st.table(metadata_df)
+        st.dataframe(result["display"], use_container_width=True, hide_index=True)
 
-            st.dataframe(result["display"], use_container_width=True)
+        totals_rows = result.get("totals_rows", [])
+        if totals_rows:
+            totals_df = pd.DataFrame(totals_rows, columns=["Label", "Amount"])
+            totals_df["Amount"] = totals_df["Amount"].apply(
+                lambda value: format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
+            )
+            st.dataframe(totals_df, use_container_width=True, hide_index=True)
 
-            totals_rows = result.get("totals_rows", [])
-            if totals_rows:
-                totals_df = pd.DataFrame(totals_rows, columns=["Label", "Amount"])
-                totals_df["Amount"] = totals_df["Amount"].apply(
-                    lambda value: format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
-                )
-                st.table(totals_df)
+        st.markdown(f"**Grand total:** {grand_total_label}")
+        if result.get("reminder_label"):
+            st.caption(result.get("reminder_label"))
 
-            st.markdown(f"**Grand total:** {grand_total_label}")
-            if result.get("reminder_label"):
-                st.caption(result.get("reminder_label"))
+        follow_up_block = result.get("follow_up") or {}
+        if any(follow_up_block.values()):
+            st.markdown("###### Follow-up plan (internal)")
+            follow_rows = [
+                ("Status", clean_text(follow_up_block.get("status")) or "—"),
+                ("Target date", follow_up_block.get("date") or "—"),
+                ("Notes", clean_text(follow_up_block.get("notes")) or "—"),
+            ]
+            st.dataframe(
+                pd.DataFrame(follow_rows, columns=["Field", "Value"]),
+                use_container_width=True,
+                hide_index=True,
+            )
 
-            follow_up_block = result.get("follow_up") or {}
-            if any(follow_up_block.values()):
-                st.markdown("###### Follow-up plan (internal)")
-                follow_rows = [
-                    ("Status", clean_text(follow_up_block.get("status")) or "—"),
-                    ("Target date", follow_up_block.get("date") or "—"),
-                    ("Notes", clean_text(follow_up_block.get("notes")) or "—"),
-                ]
-                st.table(pd.DataFrame(follow_rows, columns=["Field", "Value"]))
+        receipt_path = result.get("payment_receipt_path")
+        if receipt_path:
+            receipt_file = BASE_DIR / receipt_path
+            if receipt_file.exists():
+                with open(receipt_file, "rb") as fh:
+                    st.download_button(
+                        "Download payment receipt",
+                        data=fh.read(),
+                        file_name=receipt_file.name,
+                        mime="application/octet-stream",
+                        key="quotation_receipt_download",
+                    )
 
-            receipt_path = result.get("payment_receipt_path")
-            if receipt_path:
-                receipt_file = BASE_DIR / receipt_path
-                if receipt_file.exists():
-                    with open(receipt_file, "rb") as fh:
-                        st.download_button(
-                            "Download payment receipt",
-                            data=fh.read(),
-                            file_name=receipt_file.name,
-                            mime="application/octet-stream",
-                            key="quotation_receipt_download",
-                        )
-
-            if result.get("pdf_bytes"):
-                st.download_button(
-                    "Download PDF (letterhead)",
-                    data=result["pdf_bytes"],
-                    file_name=f"{Path(result['filename']).stem}.pdf",
-                    mime="application/pdf",
-                    key="quotation_pdf_download",
-                )
-
+        if result.get("pdf_bytes"):
             st.download_button(
-                "Download Excel copy",
-                data=result["excel_bytes"],
-                file_name=result["filename"],
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="quotation_download",
+                "Download PDF (letterhead)",
+                data=result["pdf_bytes"],
+                file_name=f"{Path(result['filename']).stem}.pdf",
+                mime="application/pdf",
+                key="quotation_pdf_download",
             )
 
-            saved_doc_path = result.get("document_path")
-            if saved_doc_path:
-                saved_doc = BASE_DIR / saved_doc_path
-                if saved_doc.exists():
-                    try:
-                        saved_bytes = saved_doc.read_bytes()
-                    except OSError:
-                        saved_bytes = None
-                    if saved_bytes:
-                            st.download_button(
-                            "Download saved PDF copy",
-                            data=saved_bytes,
-                            file_name=saved_doc.name,
-                            mime="application/pdf",
-                            key="quotation_saved_download",
-                            )
+        st.download_button(
+            "Download Excel copy",
+            data=result["excel_bytes"],
+            file_name=result["filename"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="quotation_download",
+        )
 
-        with summary_cols[1]:
-            _render_letterhead_preview(
-                result.get("metadata", {}),
-                grand_total_label,
-                template_choice=result.get("letter_template")
-                or st.session_state.get("quotation_letter_template"),
-                items=result.get("items"),
-                totals=result.get("totals"),
-            )
+        saved_doc_path = result.get("document_path")
+        if saved_doc_path:
+            saved_doc = BASE_DIR / saved_doc_path
+            if saved_doc.exists():
+                try:
+                    saved_bytes = saved_doc.read_bytes()
+                except OSError:
+                    saved_bytes = None
+                if saved_bytes:
+                    st.download_button(
+                        "Download saved PDF copy",
+                        data=saved_bytes,
+                        file_name=saved_doc.name,
+                        mime="application/pdf",
+                        key="quotation_saved_download",
+                    )
 
 
 def _render_quotation_management(conn):
@@ -7874,12 +7931,13 @@ def _render_quotation_management(conn):
         conn,
         dedent(
             f"""
-            SELECT quotation_id, reference, quote_date, customer_company, customer_contact,
-                   total_amount, status, follow_up_status, follow_up_notes, follow_up_date, reminder_label,
-                   payment_receipt_path
-            FROM quotations
+            SELECT q.quotation_id, q.reference, q.quote_date, q.customer_company, q.customer_contact,
+                   q.total_amount, q.status, q.follow_up_status, q.follow_up_notes, q.follow_up_date,
+                   q.reminder_label, q.payment_receipt_path, q.created_by, COALESCE(u.username, '(user)') AS created_by_name
+            FROM quotations q
+            LEFT JOIN users u ON u.user_id = q.created_by
             {scope_clause}
-            ORDER BY datetime(quote_date) DESC, quotation_id DESC
+            ORDER BY datetime(q.quote_date) DESC, q.quotation_id DESC
             LIMIT 50
             """
         ),
@@ -7912,6 +7970,7 @@ def _render_quotation_management(conn):
         return None
 
     quotes_df = quotes_df.copy()
+    quotes_df["status"] = quotes_df["status"].apply(lambda val: clean_text(val) or "pending")
     quotes_df["follow_up_date"] = quotes_df.get("follow_up_date", pd.Series(dtype=object)).apply(
         _as_editable_date
     )
@@ -7920,12 +7979,13 @@ def _render_quotation_management(conn):
         lambda value: format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
     )
 
+    closed_statuses = {"paid", "rejected"}
+    locked_mask = quotes_df["status"].str.lower().isin(closed_statuses)
+    editable_df = quotes_df[~locked_mask].copy()
+    locked_df = quotes_df[locked_mask].copy()
+
     edit_config = {
-        "status": st.column_config.SelectboxColumn(
-            "Status",
-            options=["pending", "paid", "rejected"],
-            format_func=lambda val: val.title(),
-        ),
+        "status": st.column_config.TextColumn("Status", disabled=True),
         "follow_up_status": st.column_config.TextColumn(
             "Follow-up status",
             help="Example: Possible, Hot, Cold, Closed",
@@ -7943,25 +8003,129 @@ def _render_quotation_management(conn):
         "payment_receipt_path": st.column_config.TextColumn(
             "Receipt proof",
             help="Relative path to the uploaded payment receipt, if any.",
+            disabled=True,
         ),
+        "created_by_name": st.column_config.TextColumn("Created by", disabled=True),
     }
 
     st.caption(
         "Edit follow-up status, notes, and dates directly in the table, then press **Save quotation updates** to persist your changes."
     )
 
-    edited = st.data_editor(
-        quotes_df,
-        hide_index=True,
-        use_container_width=True,
-        column_config=edit_config,
-        key="quotation_tracker_editor",
-    )
+    edited_records: list[dict[str, object]] = []
+    if not editable_df.empty:
+        edited = st.data_editor(
+            editable_df,
+            hide_index=True,
+            use_container_width=True,
+            column_config=edit_config,
+            key="quotation_tracker_editor",
+        )
+        edited_records = edited.to_dict("records") if isinstance(edited, pd.DataFrame) else []
+    else:
+        st.info("No pending quotations to update.")
 
     if st.button("Save quotation updates", key="quotation_tracker_save"):
-        _update_quotation_records(conn, edited.to_dict("records"))
-        st.success("Quotation statuses updated.")
-        st.toast("Quotation tracker updated", icon="✅")
+        result = _update_quotation_records(conn, edited_records)
+        updated_count = len(result.get("updated", []))
+        locked_count = len(result.get("locked", []))
+        if updated_count:
+            st.success(f"Updated {updated_count} quotation(s).")
+            st.toast("Quotation tracker updated", icon="✅")
+        if locked_count:
+            st.info("Some quotations are locked because they are marked as paid or rejected.")
+
+    st.markdown("#### Status updates with receipt")
+    status_candidates = editable_df.to_dict("records") if not editable_df.empty else []
+    if not status_candidates:
+        st.caption("All tracked quotations are already marked as paid or rejected.")
+    else:
+        status_labels: dict[int, str] = {}
+        for record in status_candidates:
+            try:
+                qid = int(record.get("quotation_id"))
+            except Exception:
+                continue
+            reference = clean_text(record.get("reference")) or f"Quotation #{qid}"
+            customer = clean_text(record.get("customer_company")) or clean_text(record.get("customer_contact"))
+            status_labels[qid] = " • ".join(part for part in [reference, customer] if part)
+        selectable_ids = list(status_labels.keys())
+        selected_id = st.selectbox(
+            "Pick a quotation to update",
+            selectable_ids,
+            format_func=lambda val: status_labels.get(val, f"Quotation #{val}"),
+            key="quotation_status_update_id",
+        )
+        selected_record = next((row for row in status_candidates if int(row.get("quotation_id")) == int(selected_id)), {})
+        current_status = clean_text(selected_record.get("status")) or "pending"
+        new_status = st.selectbox(
+            "New status",
+            ["pending", "paid", "rejected"],
+            index=["pending", "paid", "rejected"].index(current_status)
+            if current_status in {"pending", "paid", "rejected"}
+            else 0,
+            key="quotation_status_update_choice",
+        )
+        receipt_upload = None
+        existing_receipt = clean_text(selected_record.get("payment_receipt_path"))
+        if new_status == "paid":
+            receipt_upload = st.file_uploader(
+                "Upload payment receipt (required when marking as paid)",
+                type=["pdf", "png", "jpg", "jpeg", "webp"],
+                key=f"quotation_status_receipt_{selected_id}",
+            )
+            if not (receipt_upload or existing_receipt):
+                st.caption("Attach a receipt to lock this quotation as paid.")
+
+        if st.button("Apply status update", key="quotation_status_update_button"):
+            if current_status in closed_statuses:
+                st.warning("This quotation is locked and cannot be changed.")
+                return
+            if new_status == current_status:
+                st.info("No changes to apply.")
+                return
+            if new_status == "paid" and not (receipt_upload or existing_receipt):
+                st.error("Upload a receipt before marking the quotation as paid.")
+                return
+            safe_ref = _sanitize_path_component(clean_text(selected_record.get("reference")) or f"quotation_{selected_id}")
+            receipt_path = existing_receipt
+            if receipt_upload:
+                receipt_path = store_payment_receipt(
+                    receipt_upload,
+                    identifier=f"{safe_ref}_receipt",
+                )
+            update_result = _update_quotation_records(
+                conn,
+                [
+                    {
+                        "quotation_id": selected_id,
+                        "status": new_status,
+                        "payment_receipt_path": receipt_path,
+                    }
+                ],
+            )
+            if update_result.get("updated"):
+                st.success("Quotation status updated and locked.")
+                _safe_rerun()
+            elif update_result.get("locked"):
+                st.info("This quotation was already locked and was not changed.")
+
+    if not locked_df.empty:
+        st.markdown("#### Paid / rejected quotations (locked)")
+        locked_df = locked_df.rename(
+            columns={
+                "payment_receipt_path": "receipt_path",
+                "created_by_name": "Owner",
+            }
+        )
+        locked_df["Receipt"] = locked_df["receipt_path"].apply(
+            lambda path: "📎" if clean_text(path) else ""
+        )
+        st.dataframe(
+            locked_df.drop(columns=["receipt_path"], errors="ignore"),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def advanced_search_page(conn):
@@ -8733,6 +8897,7 @@ def delivery_orders_page(
     st.session_state.setdefault("delivery_order_description", "")
     st.session_state.setdefault("delivery_order_sales_person", "")
     st.session_state.setdefault("delivery_order_remarks", "")
+    st.session_state.setdefault("delivery_order_status", "pending")
 
     customer_options, customer_labels, _, _ = fetch_customer_choices(conn)
     existing_dos = df_query(
@@ -8750,6 +8915,9 @@ def delivery_orders_page(
                    d.total_amount,
                    d.created_by,
                    d.created_at,
+                   d.status,
+                   d.payment_receipt_path,
+                   d.updated_at,
                    u.username
             FROM delivery_orders d
             LEFT JOIN customers c ON c.customer_id = d.customer_id
@@ -8771,6 +8939,8 @@ def delivery_orders_page(
             load_labels[do_num] = f"{do_num} • {customer_name}"
 
     record_label = clean_text(record_type_label) or "Delivery order"
+    closed_statuses = {"paid", "rejected"}
+    current_receipt_path: Optional[str] = None
 
     st.markdown(f"### Create or update a {record_label.lower()}")
     selected_existing = st.selectbox(
@@ -8790,6 +8960,8 @@ def delivery_orders_page(
             st.session_state["delivery_order_description"] = clean_text(row.get("description")) or ""
             st.session_state["delivery_order_sales_person"] = clean_text(row.get("sales_person")) or ""
             st.session_state["delivery_order_remarks"] = clean_text(row.get("remarks")) or ""
+            st.session_state["delivery_order_status"] = clean_text(row.get("status")) or "pending"
+            current_receipt_path = clean_text(row.get("payment_receipt_path"))
             loaded_items = parse_delivery_items_payload(row.get("items_payload"))
             st.session_state["delivery_order_items_rows"] = loaded_items or _default_delivery_items()
 
@@ -8820,6 +8992,28 @@ def delivery_orders_page(
             value=st.session_state.get("delivery_order_remarks", ""),
             key="delivery_order_remarks",
         )
+        status_value = st.selectbox(
+            "Status",
+            ["pending", "paid", "rejected"],
+            index=["pending", "paid", "rejected"].index(
+                clean_text(st.session_state.get("delivery_order_status"))
+                or "pending"
+            ),
+            help="Paid or rejected delivery orders are locked against further edits.",
+            disabled=(clean_text(st.session_state.get("delivery_order_status")) or "").lower()
+            in closed_statuses,
+            key="delivery_order_status",
+        )
+        receipt_upload = None
+        if status_value == "paid":
+            receipt_upload = st.file_uploader(
+                f"{record_label} payment receipt (PDF or image)",
+                type=["pdf", "png", "jpg", "jpeg", "webp"],
+                key=f"{record_label.lower().replace(' ', '_')}_receipt_upload",
+                help="Upload proof of payment before locking the record.",
+            )
+            if current_receipt_path:
+                st.caption("A receipt is already attached; uploading a new file will replace it.")
         st.markdown("**Products / items**")
         items_df_seed = pd.DataFrame(
             st.session_state.get("delivery_order_items_rows", _default_delivery_items())
@@ -8871,18 +9065,40 @@ def delivery_orders_page(
             cur = conn.cursor()
             existing = df_query(
                 conn,
-                "SELECT file_path, items_payload, total_amount, created_by FROM delivery_orders WHERE do_number = ?",
+                "SELECT file_path, items_payload, total_amount, created_by, status, payment_receipt_path FROM delivery_orders WHERE do_number = ?",
                 (cleaned_number,),
             )
             stored_path = None
+            existing_status = "pending"
+            existing_receipt = None
             if not existing.empty:
                 stored_path = clean_text(existing.iloc[0].get("file_path"))
+                existing_status = clean_text(existing.iloc[0].get("status")) or "pending"
+                existing_receipt = clean_text(existing.iloc[0].get("payment_receipt_path"))
+            locked_record = existing_status.lower() in closed_statuses
+            if locked_record:
+                st.warning(
+                    f"{record_label} {cleaned_number} is locked because it is marked as {existing_status}."
+                )
+                return
             if do_file is not None:
                 stored_path = store_uploaded_pdf(
                     do_file,
                     DELIVERY_ORDER_DIR,
                     filename=f"do_{_sanitize_path_component(cleaned_number)}.pdf",
                 )
+            receipt_path = existing_receipt
+            if status_value == "paid":
+                if receipt_upload:
+                    receipt_identifier = _sanitize_path_component(cleaned_number) or "do_receipt"
+                    receipt_path = store_payment_receipt(
+                        receipt_upload,
+                        identifier=f"{receipt_identifier}_receipt",
+                        target_dir=DELIVERY_RECEIPT_DIR,
+                    )
+                if not receipt_path:
+                    st.error("Upload a receipt before marking this record as paid.")
+                    return
             items_clean, total_amount_value = normalize_delivery_items(
                 st.session_state.get("delivery_order_items_rows", [])
             )
@@ -8894,8 +9110,8 @@ def delivery_orders_page(
             if existing.empty:
                 cur.execute(
                     """
-                    INSERT INTO delivery_orders (do_number, customer_id, description, sales_person, remarks, file_path, items_payload, total_amount, created_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO delivery_orders (do_number, customer_id, description, sales_person, remarks, file_path, items_payload, total_amount, created_by, status, payment_receipt_path, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                     """,
                     (
                         cleaned_number,
@@ -8907,6 +9123,8 @@ def delivery_orders_page(
                         items_payload,
                         total_amount_value,
                         creator_id,
+                        clean_text(status_value) or "pending",
+                        receipt_path,
                     ),
                 )
             else:
@@ -8914,7 +9132,7 @@ def delivery_orders_page(
                 cur.execute(
                     """
                     UPDATE delivery_orders
-                       SET customer_id=?, description=?, sales_person=?, remarks=?, file_path=?, items_payload=?, total_amount=?, created_by=COALESCE(created_by, ?)
+                       SET customer_id=?, description=?, sales_person=?, remarks=?, file_path=?, items_payload=?, total_amount=?, status=?, payment_receipt_path=COALESCE(?, payment_receipt_path), updated_at=datetime('now'), created_by=COALESCE(created_by, ?)
                      WHERE do_number=?
                     """,
                     (
@@ -8925,6 +9143,8 @@ def delivery_orders_page(
                         stored_path,
                         items_payload,
                         total_amount_value,
+                        clean_text(status_value) or existing_status,
+                        receipt_path,
                         creator_id,
                         cleaned_number,
                     ),
@@ -8940,13 +9160,15 @@ def delivery_orders_page(
             event_prefix = record_label.lower().replace(" ", "_") or "delivery_order"
             event_type = f"{event_prefix}_{'updated' if not existing.empty else 'created'}"
             entity_type = "work_done" if event_prefix == "work_done" else "delivery_order"
+            status_label = clean_text(status_value) or existing_status
+            status_note = f" [{status_label.title()}]" if status_label else ""
 
             log_activity(
                 conn,
                 event_type=event_type,
                 description=(
                     f"{record_label} {cleaned_number} {action_label} for {customer_display}"
-                    f" ({total_display})"
+                    f" ({total_display}){status_note}"
                 ),
                 entity_type=entity_type,
                 entity_id=None,
@@ -8993,6 +9215,9 @@ def delivery_orders_page(
                d.total_amount,
                d.items_payload,
                d.created_by,
+               d.status,
+               d.payment_receipt_path,
+               d.updated_at,
                COALESCE(u.username, '(user)') AS created_by_name
           FROM delivery_orders d
           LEFT JOIN customers c ON c.customer_id = d.customer_id
@@ -9008,7 +9233,7 @@ def delivery_orders_page(
             )
         ]
     if not do_df.empty:
-        do_df = fmt_dates(do_df, ["created_at"])
+        do_df = fmt_dates(do_df, ["created_at", "updated_at"])
         if query_text:
             needle = query_text.lower()
             do_df = do_df[
@@ -9040,6 +9265,8 @@ def delivery_orders_page(
                     )
                 ]
         do_df["Document"] = do_df["file_path"].apply(lambda fp: "📎" if clean_text(fp) else "")
+        do_df["Receipt"] = do_df["payment_receipt_path"].apply(lambda fp: "📎" if clean_text(fp) else "")
+        do_df["status"] = do_df["status"].apply(lambda s: (clean_text(s) or "pending").title())
         if "total_amount" in do_df.columns:
             def _format_total_value(value: object) -> str:
                 if value is None:
@@ -9053,22 +9280,34 @@ def delivery_orders_page(
 
             do_df["total_amount"] = do_df["total_amount"].apply(_format_total_value)
 
-    st.dataframe(
-        do_df.rename(
-            columns={
-                "do_number": "DO number",
-                "customer": "Customer",
-                "description": "Description",
-                "sales_person": "Sales person",
-                "remarks": "Remarks",
-                "created_at": "Created",
-                "Document": "Attachment",
-                "total_amount": "Total",
-                "created_by_name": "Created by",
-            }
-        ).drop(columns=["customer_id", "file_path", "items_payload", "created_by"], errors="ignore"),
-        use_container_width=True,
-    )
+        st.dataframe(
+            do_df.rename(
+                columns={
+                    "do_number": "DO number",
+                    "customer": "Customer",
+                    "description": "Description",
+                    "sales_person": "Sales person",
+                    "remarks": "Remarks",
+                    "created_at": "Created",
+                    "updated_at": "Updated",
+                    "Document": "Attachment",
+                    "Receipt": "Receipt",
+                    "total_amount": "Total",
+                    "created_by_name": "Created by",
+                    "status": "Status",
+                }
+            ).drop(
+                columns=[
+                    "customer_id",
+                    "file_path",
+                    "items_payload",
+                    "created_by",
+                    "payment_receipt_path",
+                ],
+                errors="ignore",
+            ),
+            use_container_width=True,
+        )
 
     downloads = {}
     if not do_df.empty:
