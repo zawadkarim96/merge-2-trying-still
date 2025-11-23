@@ -3248,16 +3248,14 @@ def init_ui():
         st.session_state.user = None
 
 # ---------- Auth ----------
-def login_box(conn):
-    if "logout_button_key" not in st.session_state:
-        st.session_state.logout_button_key = f"sidebar_logout_main_{uuid.uuid4().hex}"
+def login_box(conn, *, render_id=None):
+    logout_button_key = f"sidebar_logout_main_{render_id or st.session_state.get('_render_id', 0)}"
     st.sidebar.markdown("### Login")
     if st.session_state.user:
         st.sidebar.success(f"Logged in as {st.session_state.user['username']} ({st.session_state.user['role']})")
-        if st.sidebar.button("Logout", key=st.session_state.logout_button_key):
+        if st.sidebar.button("Logout", key=logout_button_key):
             st.session_state.user = None
             st.session_state.page = "Dashboard"
-            st.session_state.logout_button_key = f"sidebar_logout_main_{uuid.uuid4().hex}"
             _safe_rerun()
         return True
     with st.sidebar.form("login_form"):
@@ -12045,10 +12043,12 @@ def reports_page(conn):
 
 # ---------- Main ----------
 def main():
+    st.session_state["_render_id"] = st.session_state.get("_render_id", 0) + 1
+    render_id = st.session_state["_render_id"]
     init_ui()
     conn = get_conn()
     init_schema(conn)
-    login_box(conn)
+    login_box(conn, render_id=render_id)
 
     if "page" not in st.session_state:
         st.session_state.page = "Dashboard"
@@ -12135,7 +12135,8 @@ def main():
     elif page == "Maintenance and Service":
         service_maintenance_page(conn)
 
-if _streamlit_runtime_active():
-    main()
-elif __name__ == "__main__":
-    _bootstrap_streamlit_app()
+if __name__ == "__main__":
+    if _streamlit_runtime_active():
+        main()
+    else:
+        _bootstrap_streamlit_app()
