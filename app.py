@@ -1881,6 +1881,7 @@ def _reset_quotation_form_state() -> None:
         "quotation_closing",
         "quotation_quote_type",
         "quotation_customer_district",
+        "quotation_customer_district_select",
         "quotation_letter_template",
         "quotation_admin_notes",
         "quotation_reminder_label",
@@ -3170,9 +3171,7 @@ def login_box(conn):
     st.sidebar.markdown("### Login")
     if st.session_state.user:
         st.sidebar.success(f"Logged in as {st.session_state.user['username']} ({st.session_state.user['role']})")
-        # Use a unique key to avoid clashes when other sidebar widgets reuse logout
-        # functionality in different contexts.
-        logout_key = f"sidebar_logout_main_{st.session_state.page}"
+        logout_key = "sidebar_logout_main"
         if st.sidebar.button("Logout", key=logout_key):
             st.session_state.user = None
             st.session_state.page = "Dashboard"
@@ -7113,6 +7112,35 @@ def _render_quotation_section(conn):
         "Thakurgaon",
     ]
 
+    autofill_customer = st.session_state.get("quotation_autofill_customer")
+    st.session_state.setdefault("quotation_customer_district_select", "Select district")
+    st.session_state.setdefault("quotation_customer_district", "")
+    if autofill_customer:
+        seed = autofill_records.get(int(autofill_customer))
+        if seed:
+            if not st.session_state.get("quotation_company_name"):
+                st.session_state["quotation_company_name"] = (
+                    clean_text(seed.get("company_name"))
+                    or clean_text(seed.get("name"))
+                    or ""
+                )
+            if not st.session_state.get("quotation_customer_contact"):
+                st.session_state["quotation_customer_contact"] = (
+                    clean_text(seed.get("phone")) or ""
+                )
+            if not st.session_state.get("quotation_customer_address"):
+                st.session_state["quotation_customer_address"] = (
+                    clean_text(seed.get("delivery_address"))
+                    or clean_text(seed.get("address"))
+                    or ""
+                )
+            if not st.session_state.get("quotation_customer_district"):
+                district_seed = clean_text(seed.get("district")) or ""
+                st.session_state["quotation_customer_district"] = district_seed
+                st.session_state["quotation_customer_district_select"] = (
+                    district_seed or "Select district"
+                )
+
     form_col, preview_col = st.columns((1.15, 0.85))
     submit = False
     with form_col:
@@ -7194,23 +7222,31 @@ def _render_quotation_section(conn):
                     value=st.session_state.get("quotation_company_name", ""),
                     key="quotation_company_name",
                 )
-                district_default = st.session_state.get("quotation_customer_district", "")
+                district_state_key = "quotation_customer_district"
+                district_widget_key = "quotation_customer_district_select"
+                stored_district = st.session_state.get(district_state_key, "")
+                district_default = (
+                    st.session_state.get(district_widget_key)
+                    or stored_district
+                    or "Select district"
+                )
                 district_options = ["Select district"] + sorted(bangladesh_districts)
                 district_index = (
                     district_options.index(district_default)
                     if district_default in district_options
                     else 0
                 )
-                customer_district = st.selectbox(
+                customer_district_selection = st.selectbox(
                     "Customer district",
                     district_options,
                     index=district_index,
-                    key="quotation_customer_district",
+                    key=district_widget_key,
                     help="Pick a Bangladesh district to keep reporting consistent.",
                 )
-                if customer_district == "Select district":
-                    customer_district = ""
-                st.session_state["quotation_customer_district"] = customer_district
+                customer_district = (
+                    "" if customer_district_selection == "Select district" else customer_district_selection
+                )
+                st.session_state[district_state_key] = customer_district
                 customer_contact = st.text_input(
                     "Customer contact number",
                     value=st.session_state.get("quotation_customer_contact", ""),
@@ -7411,22 +7447,6 @@ def _render_quotation_section(conn):
                 )
                 st.toast("Quotation form reset", icon="ℹ️")
                 _safe_rerun()
-
-    if st.session_state.get("quotation_autofill_customer"):
-        seed = autofill_records.get(int(st.session_state["quotation_autofill_customer"]))
-        if seed:
-            if not st.session_state.get("quotation_company_name"):
-                st.session_state["quotation_company_name"] = clean_text(seed.get("company_name")) or clean_text(seed.get("name")) or ""
-            if not st.session_state.get("quotation_customer_contact"):
-                st.session_state["quotation_customer_contact"] = clean_text(seed.get("phone")) or ""
-            if not st.session_state.get("quotation_customer_address"):
-                st.session_state["quotation_customer_address"] = (
-                    clean_text(seed.get("delivery_address"))
-                    or clean_text(seed.get("address"))
-                    or ""
-                )
-            if not st.session_state.get("quotation_customer_district"):
-                st.session_state["quotation_customer_district"] = clean_text(seed.get("district")) or ""
 
     preview_items, preview_totals = normalize_quotation_items(
         st.session_state.get("quotation_item_rows", [])
