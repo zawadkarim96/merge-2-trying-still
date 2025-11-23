@@ -1446,12 +1446,17 @@ def normalize_product_entries(
         model_clean = clean_text(entry.get("model")) if isinstance(entry, dict) else None
         serial_clean = clean_text(entry.get("serial")) if isinstance(entry, dict) else None
         quantity_raw = entry.get("quantity") if isinstance(entry, dict) else None
+        price_raw = None
+        if isinstance(entry, dict):
+            price_raw = entry.get("unit_price") if "unit_price" in entry else entry.get("price")
         qty_val = _coerce_float(quantity_raw, 1.0)
         try:
             qty_val_int = int(round(qty_val))
         except Exception:
             qty_val_int = 1
         qty_val = max(qty_val_int, 1)
+        unit_price = max(_coerce_float(price_raw, 0.0), 0.0)
+        line_total = unit_price * qty_val if unit_price else None
         if not any([name_clean, model_clean, serial_clean]):
             continue
         cleaned.append(
@@ -1460,12 +1465,19 @@ def normalize_product_entries(
                 "model": model_clean,
                 "serial": serial_clean,
                 "quantity": qty_val,
+                "unit_price": unit_price if unit_price else None,
+                "total": line_total if line_total else None,
             }
         )
         label_parts = [val for val in [name_clean, model_clean] if val]
         label = " - ".join(label_parts)
         if qty_val > 1:
             label = f"{label} ×{qty_val}" if label else f"×{qty_val}"
+        if unit_price:
+            price_block = f"Tk {unit_price:,.2f}"
+            if line_total:
+                price_block = f"{price_block} (Total Tk {line_total:,.2f})"
+            label = f"{label} @ {price_block}" if label else price_block
         if serial_clean:
             label = f"{label} (Serial: {serial_clean})" if label else f"Serial: {serial_clean}"
         if label:
@@ -1723,7 +1735,15 @@ def _safe_rerun():
 
 
 def _default_new_customer_products() -> list[dict[str, object]]:
-    return [{"name": "", "model": "", "serial": "", "quantity": 1}]
+    return [
+        {
+            "name": "",
+            "model": "",
+            "serial": "",
+            "quantity": 1,
+            "unit_price": 0.0,
+        }
+    ]
 
 
 def _reset_new_customer_form_state() -> None:
@@ -4575,12 +4595,22 @@ def customers_page(conn):
                 "Use the **Add row** option below to record each product or service purchased."
             )
             products_df = pd.DataFrame(products_state)
-            required_columns = ["name", "model", "serial", "quantity"]
+            required_columns = ["name", "model", "serial", "quantity", "unit_price", "total"]
             for column in required_columns:
                 if column not in products_df.columns:
-                    default_value = 1 if column == "quantity" else ""
+                    default_value = 0.0 if column in ["unit_price", "total"] else ""
+                    if column == "quantity":
+                        default_value = 1
                     products_df[column] = default_value
             products_df = products_df[required_columns]
+            products_df["total"] = products_df.apply(
+                lambda row: max(
+                    _coerce_float(row.get("quantity"), 1.0)
+                    * _coerce_float(row.get("unit_price"), 0.0),
+                    0.0,
+                ),
+                axis=1,
+            )
             edited_products = st.data_editor(
                 products_df,
                 key="new_customer_products_table",
@@ -4606,9 +4636,30 @@ def customers_page(conn):
                         step=1,
                         format="%d",
                     ),
+                    "unit_price": st.column_config.NumberColumn(
+                        "Unit price",
+                        min_value=0.0,
+                        step=100.0,
+                        format="%.2f",
+                    ),
+                    "total": st.column_config.NumberColumn(
+                        "Line total",
+                        format="%.2f",
+                        help="Quantity × unit price (read only)",
+                        disabled=True,
+                    ),
                 },
             )
-            product_entries = edited_products.to_dict("records")
+            editor_df = edited_products if isinstance(edited_products, pd.DataFrame) else pd.DataFrame(edited_products)
+            editor_df["total"] = editor_df.apply(
+                lambda row: max(
+                    _coerce_float(row.get("quantity"), 1.0)
+                    * _coerce_float(row.get("unit_price"), 0.0),
+                    0.0,
+                ),
+                axis=1,
+            )
+            product_entries = editor_df.to_dict("records")
             st.session_state["new_customer_products_rows"] = product_entries
             with st.expander("Attachments & advanced details", expanded=True):
                 do_code = st.text_input(
@@ -6610,7 +6661,15 @@ def _build_quotation_pdf(
             ]
         )
 
-    table_data.append(["", "", "", "<b>Total Amount (Tk.)</b>", f"<b>{grand_total_label}</b>"])
+    table_data.append(
+        [
+            "",
+            "",
+            "",
+            Paragraph("<b>Total Amount (Tk.)</b>", styles["BodySmall"]),
+            Paragraph(f"<b>{grand_total_label}</b>", styles["BodySmall"]),
+        ]
+    )
 
     col_widths = [doc.width * 0.08, doc.width * 0.48, doc.width * 0.1, doc.width * 0.17, doc.width * 0.17]
     pricing_table = Table(table_data, colWidths=col_widths, repeatRows=1)
@@ -6987,11 +7046,77 @@ def _render_quotation_section(conn):
         "In 2 weeks": 14,
         "Custom date": None,
     }
+    bangladesh_districts = [
+        "Bagerhat",
+        "Bandarban",
+        "Barguna",
+        "Barishal",
+        "Bhola",
+        "Bogura",
+        "Brahmanbaria",
+        "Chandpur",
+        "Chapai Nawabganj",
+        "Chattogram",
+        "Chuadanga",
+        "Cox's Bazar",
+        "Cumilla",
+        "Dhaka",
+        "Dinajpur",
+        "Faridpur",
+        "Feni",
+        "Gaibandha",
+        "Gazipur",
+        "Gopalganj",
+        "Habiganj",
+        "Jamalpur",
+        "Jashore",
+        "Jhalokathi",
+        "Jhenaidah",
+        "Joypurhat",
+        "Khagrachhari",
+        "Khulna",
+        "Kishoreganj",
+        "Kurigram",
+        "Kushtia",
+        "Lakshmipur",
+        "Lalmonirhat",
+        "Madaripur",
+        "Magura",
+        "Manikganj",
+        "Meherpur",
+        "Moulvibazar",
+        "Munshiganj",
+        "Mymensingh",
+        "Naogaon",
+        "Narail",
+        "Narayanganj",
+        "Narsingdi",
+        "Natore",
+        "Netrokona",
+        "Nilphamari",
+        "Noakhali",
+        "Pabna",
+        "Panchagarh",
+        "Patuakhali",
+        "Pirojpur",
+        "Rajbari",
+        "Rajshahi",
+        "Rangamati",
+        "Rangpur",
+        "Satkhira",
+        "Shariatpur",
+        "Sherpur",
+        "Sirajganj",
+        "Sunamganj",
+        "Sylhet",
+        "Tangail",
+        "Thakurgaon",
+    ]
 
     form_col, preview_col = st.columns((1.15, 0.85))
     submit = False
     with form_col:
-        with st.form("quotation_form"):
+        with st.container():
             header_cols = st.columns((1.25, 0.75))
             with header_cols[0]:
                 st.caption("Compose, save and track quotations from a single workspace.")
@@ -7069,11 +7194,23 @@ def _render_quotation_section(conn):
                     value=st.session_state.get("quotation_company_name", ""),
                     key="quotation_company_name",
                 )
-                customer_district = st.text_input(
-                    "Customer district",
-                    value=st.session_state.get("quotation_customer_district", ""),
-                    key="quotation_customer_district",
+                district_default = st.session_state.get("quotation_customer_district", "")
+                district_options = ["Select district"] + sorted(bangladesh_districts)
+                district_index = (
+                    district_options.index(district_default)
+                    if district_default in district_options
+                    else 0
                 )
+                customer_district = st.selectbox(
+                    "Customer district",
+                    district_options,
+                    index=district_index,
+                    key="quotation_customer_district",
+                    help="Pick a Bangladesh district to keep reporting consistent.",
+                )
+                if customer_district == "Select district":
+                    customer_district = ""
+                st.session_state["quotation_customer_district"] = customer_district
                 customer_contact = st.text_input(
                     "Customer contact number",
                     value=st.session_state.get("quotation_customer_contact", ""),
@@ -7116,11 +7253,17 @@ def _render_quotation_section(conn):
             st.markdown("#### Product details")
             items_toolbar = st.columns(3)
             with items_toolbar[0]:
-                add_item = st.form_submit_button("Add item", use_container_width=True)
+                add_item = st.button(
+                    "Add item", key="quotation_add_item", use_container_width=True
+                )
             with items_toolbar[1]:
-                clear_items = st.form_submit_button("Clear items", use_container_width=True)
+                clear_items = st.button(
+                    "Clear items", key="quotation_clear_items", use_container_width=True
+                )
             with items_toolbar[2]:
-                reset_items = st.form_submit_button("Reset defaults", use_container_width=True)
+                reset_items = st.button(
+                    "Reset defaults", key="quotation_reset_items", use_container_width=True
+                )
             if add_item:
                 st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
             if clear_items:
@@ -7250,10 +7393,15 @@ def _render_quotation_section(conn):
                 st.session_state.pop("quotation_follow_up_date", None)
 
             action_cols = st.columns([1, 1])
-            submit = action_cols[0].form_submit_button(
-                "Create quotation", type="primary", use_container_width=True
+            submit = action_cols[0].button(
+                "Create quotation",
+                type="primary",
+                use_container_width=True,
+                key="quotation_submit",
             )
-            reset = action_cols[1].form_submit_button("Reset form", use_container_width=True)
+            reset = action_cols[1].button(
+                "Reset form", use_container_width=True, key="quotation_reset"
+            )
 
             if reset:
                 _reset_quotation_form_state()
@@ -7779,7 +7927,12 @@ def advanced_search_page(conn):
             return
         filtered = _apply_date_filter(df, date_col)
         for row in filtered.to_dict("records"):
-            staff_id = int(row.get("created_by")) if row.get("created_by") is not None else None
+            staff_raw = row.get("created_by")
+            staff_id = (
+                int(staff_raw)
+                if staff_raw is not None and not pd.isna(staff_raw)
+                else None
+            )
             if staff_filter and staff_id not in staff_filter:
                 continue
             details = build_details(row)
@@ -9946,6 +10099,61 @@ def duplicates_page(conn):
                 "Each duplicate set groups rows sharing the same phone, purchase date, and product so you can double-check real multi-unit sales."
             )
             st.dataframe(display_df, use_container_width=True, hide_index=True)
+            combined_preview = (
+                preview_df.groupby(["name", "phone"], dropna=False)
+                .apply(
+                    lambda g: pd.Series(
+                        {
+                            "Address": dedupe_join(
+                                [
+                                    clean_text(val)
+                                    for val in g.get("address", pd.Series(dtype=object)).tolist()
+                                    if clean_text(val)
+                                ]
+                            ),
+                            "Products": dedupe_join(
+                                [
+                                    clean_text(val)
+                                    for val in g.get("product_info", pd.Series(dtype=object)).tolist()
+                                    if clean_text(val)
+                                ]
+                            ),
+                            "Purchase dates": dedupe_join(
+                                [
+                                    val
+                                    for val in g.get("purchase_date_fmt", pd.Series(dtype=object)).tolist()
+                                    if val
+                                ]
+                            ),
+                            "DO codes": dedupe_join(
+                                [
+                                    clean_text(val)
+                                    for val in g.get("delivery_order_code", pd.Series(dtype=object)).tolist()
+                                    if clean_text(val)
+                                ]
+                            ),
+                            "Created": dedupe_join(
+                                [
+                                    val
+                                    for val in g.get("created_at_fmt", pd.Series(dtype=object)).tolist()
+                                    if val
+                                ]
+                            ),
+                        }
+                    )
+                )
+                .reset_index()
+            )
+            if not combined_preview.empty:
+                combined_preview = combined_preview.rename(
+                    columns={"name": "Name", "phone": "Phone"}
+                )
+                st.caption("Condensed view (grouped by customer and phone)")
+                st.dataframe(
+                    combined_preview,
+                    use_container_width=True,
+                    hide_index=True,
+                )
         group_counts = editor_df.groupby("__group_key").size().to_dict()
         selection_options = [(None, "All duplicate rows")] + [
             (label, f"{label} ({group_counts.get(label, 0)} row(s))") for label in sorted(editor_df["__group_key"].unique())
