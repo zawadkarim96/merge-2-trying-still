@@ -7660,192 +7660,192 @@ def _render_quotation_section(conn):
                 st.error("Add at least one item with a description to create a quotation.")
                 return
 
-        reminder_days = follow_up_presets.get(follow_up_choice) if status_value != "paid" else None
-        follow_up_date = follow_up_date_value if status_value != "paid" else None
-        follow_up_iso = None
-        follow_up_label = "Payment received - follow-up not required."
-        reminder_label = None
-        if status_value != "paid":
-            if reminder_days is not None:
-                follow_up_date = quotation_date + timedelta(days=reminder_days)
-            follow_up_iso = to_iso_date(follow_up_date)
-            follow_up_label = format_period_range(follow_up_iso, follow_up_iso)
-            reminder_label = (
-                f"Reminder scheduled in {reminder_days} days on {follow_up_label}."
-                if reminder_days is not None
-                else f"Reminder scheduled for {follow_up_label}."
-            )
-        else:
-            reminder_label = "Payment marked as received; follow-up reminders disabled."
-        grand_total_value = totals_data["grand_total"]
-
-        receipt_path = None
-        if status_value == "paid":
-            receipt_identifier = _sanitize_path_component(reference_value) or f"quotation_{quotation_date.strftime('%Y%m%d')}"
-            receipt_path = store_payment_receipt(
-                receipt_upload,
-                identifier=f"{receipt_identifier}_receipt",
-            )
-
-        metadata = OrderedDict()
-        metadata["Reference number"] = reference_value
-        metadata["Date"] = quotation_date.strftime(DATE_FMT)
-        metadata["Customer contact name"] = customer_contact_name
-        metadata["Customer company"] = customer_company
-        metadata["Customer address"] = customer_address
-        metadata["Customer district"] = customer_district
-        metadata["Customer contact"] = customer_contact
-        metadata["Attention name"] = attention_name
-        metadata["Attention title"] = attention_title
-        metadata["Subject"] = subject_line
-        metadata["Salutation"] = salutation
-        metadata["Introduction"] = intro_text
-        metadata["Quote type"] = quote_type
-        metadata["Closing / thanks"] = closing_text
-        metadata["Salesperson name"] = prepared_by
-        metadata["Salesperson title"] = salesperson_title
-        metadata["Salesperson contact"] = salesperson_contact
-        metadata["Follow-up status"] = follow_up_status
-        metadata["Follow-up date"] = follow_up_label
-        metadata["Remarks (admin)"] = admin_notes
-        metadata["Payment receipt"] = "Attached" if receipt_path else "Not uploaded"
-        metadata["Total amount (BDT)"] = grand_total_value
-        metadata["Status"] = status_value.title()
-
-        totals_rows = [("Gross amount", totals_data["gross_total"])]
-        if totals_data["discount_total"]:
-            totals_rows.append(("Discount total", totals_data["discount_total"]))
-        totals_rows.append(("Grand total", grand_total_value))
-
-        workbook_items = [item.copy() for item in items_clean]
-        workbook_bytes = _build_quotation_workbook(
-            metadata=metadata,
-            items=workbook_items,
-            totals=totals_rows,
-        )
-        pdf_bytes = _build_quotation_pdf(
-            metadata=metadata,
-            items=items_clean,
-            totals=totals_data,
-            grand_total_label=format_money(grand_total_value) or f"{grand_total_value:,.2f}",
-            template_choice=template_choice,
-        )
-
-        display_df = pd.DataFrame(workbook_items)
-
-        def _format_quantity_display(value: object) -> str:
-            amount = _coerce_float(value, 0.0)
-            if math.isclose(amount, round(amount)):
-                return f"{int(round(amount))}"
-            return f"{amount:,.2f}"
-
-        money_columns = ["Rate", "Gross amount", "Discount amount", "Line total"]
-        for col in money_columns:
-            if col in display_df.columns:
-                display_df[col] = display_df[col].apply(
-                    lambda value: format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
+            reminder_days = follow_up_presets.get(follow_up_choice) if status_value != "paid" else None
+            follow_up_date = follow_up_date_value if status_value != "paid" else None
+            follow_up_iso = None
+            follow_up_label = "Payment received - follow-up not required."
+            reminder_label = None
+            if status_value != "paid":
+                if reminder_days is not None:
+                    follow_up_date = quotation_date + timedelta(days=reminder_days)
+                follow_up_iso = to_iso_date(follow_up_date)
+                follow_up_label = format_period_range(follow_up_iso, follow_up_iso)
+                reminder_label = (
+                    f"Reminder scheduled in {reminder_days} days on {follow_up_label}."
+                    if reminder_days is not None
+                    else f"Reminder scheduled for {follow_up_label}."
                 )
-        if "Quantity" in display_df.columns:
-            display_df["Quantity"] = display_df["Quantity"].apply(_format_quantity_display)
-        percentage_columns = ["Discount (%)"]
-        for col in percentage_columns:
-            if col in display_df.columns:
-                display_df[col] = display_df[col].apply(lambda value: f"{_coerce_float(value, 0.0):.2f}%")
-        display_df = display_df.fillna("")
+            else:
+                reminder_label = "Payment marked as received; follow-up reminders disabled."
+            grand_total_value = totals_data["grand_total"]
 
-        base_filename = clean_text(reference_value) or f"quotation_{quotation_date.strftime('%Y%m%d')}"
-        safe_name = _sanitize_path_component(base_filename)
-        if not safe_name:
-            safe_name = f"quotation_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        filename = f"{safe_name}.xlsx"
+            receipt_path = None
+            if status_value == "paid":
+                receipt_identifier = _sanitize_path_component(reference_value) or f"quotation_{quotation_date.strftime('%Y%m%d')}"
+                receipt_path = store_payment_receipt(
+                    receipt_upload,
+                    identifier=f"{receipt_identifier}_receipt",
+                )
 
-        payload = {
-            "reference": reference_value,
-            "quote_date": quotation_date.isoformat(),
-            "customer_name": customer_contact_name,
-            "customer_company": customer_company,
-            "customer_address": customer_address,
-            "customer_district": customer_district,
-            "customer_contact": customer_contact,
-            "attention_name": attention_name,
-            "attention_title": attention_title,
-            "subject": subject_line,
-            "salutation": salutation,
-            "introduction": intro_text,
-            "closing": closing_text,
-            "quote_type": quote_type,
-            "total_amount": grand_total_value,
-            "discount_pct": default_discount,
-            "status": status_value,
-            "follow_up_status": follow_up_status,
-            "follow_up_notes": follow_up_notes,
-            "follow_up_date": follow_up_iso,
-            "reminder_label": reminder_label,
-            "letter_template": template_choice,
-            "salesperson_name": prepared_by,
-            "salesperson_title": salesperson_title,
-            "salesperson_contact": salesperson_contact,
-            "document_path": None,
-            "remarks_internal": admin_notes,
-            "payment_receipt_path": receipt_path,
-            "created_by": current_user_id(),
-        }
-        record_id = _save_quotation_record(conn, payload)
-        document_path = None
-        if record_id:
-            document_path = _persist_quotation_pdf(
-                record_id, pdf_bytes, reference_value
+            metadata = OrderedDict()
+            metadata["Reference number"] = reference_value
+            metadata["Date"] = quotation_date.strftime(DATE_FMT)
+            metadata["Customer contact name"] = customer_contact_name
+            metadata["Customer company"] = customer_company
+            metadata["Customer address"] = customer_address
+            metadata["Customer district"] = customer_district
+            metadata["Customer contact"] = customer_contact
+            metadata["Attention name"] = attention_name
+            metadata["Attention title"] = attention_title
+            metadata["Subject"] = subject_line
+            metadata["Salutation"] = salutation
+            metadata["Introduction"] = intro_text
+            metadata["Quote type"] = quote_type
+            metadata["Closing / thanks"] = closing_text
+            metadata["Salesperson name"] = prepared_by
+            metadata["Salesperson title"] = salesperson_title
+            metadata["Salesperson contact"] = salesperson_contact
+            metadata["Follow-up status"] = follow_up_status
+            metadata["Follow-up date"] = follow_up_label
+            metadata["Remarks (admin)"] = admin_notes
+            metadata["Payment receipt"] = "Attached" if receipt_path else "Not uploaded"
+            metadata["Total amount (BDT)"] = grand_total_value
+            metadata["Status"] = status_value.title()
+
+            totals_rows = [("Gross amount", totals_data["gross_total"])]
+            if totals_data["discount_total"]:
+                totals_rows.append(("Discount total", totals_data["discount_total"]))
+            totals_rows.append(("Grand total", grand_total_value))
+
+            workbook_items = [item.copy() for item in items_clean]
+            workbook_bytes = _build_quotation_workbook(
+                metadata=metadata,
+                items=workbook_items,
+                totals=totals_rows,
             )
-            if document_path:
-                try:
-                    conn.execute(
-                        "UPDATE quotations SET document_path=? WHERE quotation_id=?",
-                        (document_path, int(record_id)),
+            pdf_bytes = _build_quotation_pdf(
+                metadata=metadata,
+                items=items_clean,
+                totals=totals_data,
+                grand_total_label=format_money(grand_total_value) or f"{grand_total_value:,.2f}",
+                template_choice=template_choice,
+            )
+
+            display_df = pd.DataFrame(workbook_items)
+
+            def _format_quantity_display(value: object) -> str:
+                amount = _coerce_float(value, 0.0)
+                if math.isclose(amount, round(amount)):
+                    return f"{int(round(amount))}"
+                return f"{amount:,.2f}"
+
+            money_columns = ["Rate", "Gross amount", "Discount amount", "Line total"]
+            for col in money_columns:
+                if col in display_df.columns:
+                    display_df[col] = display_df[col].apply(
+                        lambda value: format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
                     )
-                    conn.commit()
-                except sqlite3.Error:
-                    document_path = None
-            summary_label = reference_value or f"Quotation #{record_id}"
-            formatted_total = format_money(grand_total_value) or f"{_coerce_float(grand_total_value, 0.0):,.2f}"
-            log_activity(
-                conn,
-                event_type="quotation_created",
-                description=f"{prepared_by or 'Sales'} logged {summary_label} ({formatted_total})",
-                entity_type="quotation",
-                entity_id=int(record_id),
-            )
+            if "Quantity" in display_df.columns:
+                display_df["Quantity"] = display_df["Quantity"].apply(_format_quantity_display)
+            percentage_columns = ["Discount (%)"]
+            for col in percentage_columns:
+                if col in display_df.columns:
+                    display_df[col] = display_df[col].apply(lambda value: f"{_coerce_float(value, 0.0):.2f}%")
+            display_df = display_df.fillna("")
 
-            if not current_user_is_admin():
-                push_runtime_notification(
-                    "New quotation submitted",
-                    f"{prepared_by or 'Sales'} created {summary_label}.",
-                    severity="info",
+            base_filename = clean_text(reference_value) or f"quotation_{quotation_date.strftime('%Y%m%d')}"
+            safe_name = _sanitize_path_component(base_filename)
+            if not safe_name:
+                safe_name = f"quotation_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            filename = f"{safe_name}.xlsx"
+
+            payload = {
+                "reference": reference_value,
+                "quote_date": quotation_date.isoformat(),
+                "customer_name": customer_contact_name,
+                "customer_company": customer_company,
+                "customer_address": customer_address,
+                "customer_district": customer_district,
+                "customer_contact": customer_contact,
+                "attention_name": attention_name,
+                "attention_title": attention_title,
+                "subject": subject_line,
+                "salutation": salutation,
+                "introduction": intro_text,
+                "closing": closing_text,
+                "quote_type": quote_type,
+                "total_amount": grand_total_value,
+                "discount_pct": default_discount,
+                "status": status_value,
+                "follow_up_status": follow_up_status,
+                "follow_up_notes": follow_up_notes,
+                "follow_up_date": follow_up_iso,
+                "reminder_label": reminder_label,
+                "letter_template": template_choice,
+                "salesperson_name": prepared_by,
+                "salesperson_title": salesperson_title,
+                "salesperson_contact": salesperson_contact,
+                "document_path": None,
+                "remarks_internal": admin_notes,
+                "payment_receipt_path": receipt_path,
+                "created_by": current_user_id(),
+            }
+            record_id = _save_quotation_record(conn, payload)
+            document_path = None
+            if record_id:
+                document_path = _persist_quotation_pdf(
+                    record_id, pdf_bytes, reference_value
+                )
+                if document_path:
+                    try:
+                        conn.execute(
+                            "UPDATE quotations SET document_path=? WHERE quotation_id=?",
+                            (document_path, int(record_id)),
+                        )
+                        conn.commit()
+                    except sqlite3.Error:
+                        document_path = None
+                summary_label = reference_value or f"Quotation #{record_id}"
+                formatted_total = format_money(grand_total_value) or f"{_coerce_float(grand_total_value, 0.0):,.2f}"
+                log_activity(
+                    conn,
+                    event_type="quotation_created",
+                    description=f"{prepared_by or 'Sales'} logged {summary_label} ({formatted_total})",
+                    entity_type="quotation",
+                    entity_id=int(record_id),
                 )
 
-        st.toast("Quotation created", icon="✅")
+                if not current_user_is_admin():
+                    push_runtime_notification(
+                        "New quotation submitted",
+                        f"{prepared_by or 'Sales'} created {summary_label}.",
+                        severity="info",
+                    )
 
-        st.session_state[result_key] = {
-            "display": display_df,
-            "metadata_items": list(metadata.items()),
-            "totals_rows": totals_rows,
-            "grand_total": grand_total_value,
-            "metadata": metadata,
-            "excel_bytes": workbook_bytes,
-            "filename": filename,
-            "pdf_bytes": pdf_bytes,
-            "record_id": record_id,
-            "reminder_label": reminder_label,
-            "letter_template": template_choice,
-            "payment_receipt_path": receipt_path,
-            "document_path": document_path,
-            "items": items_clean,
-            "totals": totals_data,
-            "follow_up": {
-                "status": follow_up_status,
-                "notes": follow_up_notes,
-                "date": follow_up_label,
-            },
-        }
+            st.toast("Quotation created", icon="✅")
+
+            st.session_state[result_key] = {
+                "display": display_df,
+                "metadata_items": list(metadata.items()),
+                "totals_rows": totals_rows,
+                "grand_total": grand_total_value,
+                "metadata": metadata,
+                "excel_bytes": workbook_bytes,
+                "filename": filename,
+                "pdf_bytes": pdf_bytes,
+                "record_id": record_id,
+                "reminder_label": reminder_label,
+                "letter_template": template_choice,
+                "payment_receipt_path": receipt_path,
+                "document_path": document_path,
+                "items": items_clean,
+                "totals": totals_data,
+                "follow_up": {
+                    "status": follow_up_status,
+                    "notes": follow_up_notes,
+                    "date": follow_up_label,
+                },
+            }
 
     result = st.session_state.get(result_key)
     if result:
