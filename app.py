@@ -24,6 +24,7 @@ from openpyxl import load_workbook
 
 
 import streamlit as st
+from streamlit.components.v1 import html as st_components_html
 from collections import OrderedDict
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -7191,7 +7192,7 @@ def _render_letterhead_preview(
     )
 
     st.markdown("##### Letterhead preview", help="Your quotation details overlaid on the provided letterhead.")
-    st.markdown(preview_html, unsafe_allow_html=True)
+    st_components_html(preview_html, height=1200, scrolling=True)
 
 
 def _quotation_scope_filter() -> tuple[str, tuple[object, ...]]:
