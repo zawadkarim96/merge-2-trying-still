@@ -6930,6 +6930,27 @@ def _render_letterhead_preview(
     items = items or []
     totals = totals or {}
 
+    grand_total_value = _coerce_float(totals.get("grand_total"), 0.0)
+    if grand_total_value <= 0:
+        parsed_from_label = parse_amount(grand_total)
+        if parsed_from_label is not None:
+            grand_total_value = parsed_from_label
+
+    if grand_total_value <= 0 and items:
+        item_total = 0.0
+        for item in items:
+            line_total = parse_amount(
+                item.get("Line total")
+                or item.get("line_total")
+                or item.get("Amount")
+            )
+            if line_total is not None:
+                item_total += line_total
+        if item_total > 0:
+            grand_total_value = item_total
+
+    grand_total_label = _format_currency(grand_total_value) or grand_total
+
     subject = html.escape(
         metadata.get("Subject")
         or metadata.get("Subject / scope", "Quotation")
@@ -6993,7 +7014,7 @@ def _render_letterhead_preview(
         f"<tr style='background:#f8fafc;'>"
         f"<td colspan='3' style='padding:6px; border:1px solid #cbd5e1;'></td>"
         f"<td style='padding:6px; text-align:right; border:1px solid #cbd5e1; font-weight:700;'>Total Amount (Tk.)</td>"
-        f"<td style='padding:6px; text-align:right; border:1px solid #cbd5e1; font-weight:700;'>{grand_total}</td>"
+        f"<td style='padding:6px; text-align:right; border:1px solid #cbd5e1; font-weight:700;'>{grand_total_label}</td>"
         f"</tr>"
     )
 
@@ -7032,7 +7053,7 @@ def _render_letterhead_preview(
             </tbody>
           </table>
           {f"<div style='margin-top: 8px; font-size: 12px; color:#475569;'>Discount applied: {discount_label} (reflected above)</div>" if discount_label else ''}
-          <div style="margin-top: 10px; font-size: 13px;">In Words: {grand_total}</div>
+          <div style="margin-top: 10px; font-size: 13px;">In Words: {grand_total_label}</div>
           <div style="margin-top: 18px; font-size: 13px; line-height: 1.6;">{closing}</div>
           <div style="margin-top: 40px; font-size: 13px; line-height: 1.4;">
             <div>{prepared_by or ''}</div>
