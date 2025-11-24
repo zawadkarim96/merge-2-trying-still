@@ -53,3 +53,12 @@ def test_normalize_quotation_items_skips_blank_descriptions(app_module):
     assert len(items) == 1
     assert items[0]["Description"] == "Valid"
     assert pytest.approx(totals["grand_total"], rel=1e-6) == 100
+
+
+def test_format_amount_in_words_returns_phrase(app_module):
+    assert app_module.format_amount_in_words(1250) == "One thousand two hundred and fifty taka"
+    assert (
+        app_module.format_amount_in_words(1250.75)
+        == "One thousand two hundred and fifty taka and seventy five paisa"
+    )
+    assert app_module.format_amount_in_words(None) is None

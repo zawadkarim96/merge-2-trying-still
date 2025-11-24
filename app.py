@@ -1389,6 +1389,89 @@ def format_money(value) -> Optional[str]:
     return f"{amount:,.2f}"
 
 
+def format_amount_in_words(value: object) -> Optional[str]:
+    amount = parse_amount(value)
+    if amount is None:
+        return None
+
+    taka = int(amount)
+    paisa = int(round((amount - taka) * 100))
+
+    below_twenty = [
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+    ]
+    tens_words = [
+        "",
+        "ten",
+        "twenty",
+        "thirty",
+        "forty",
+        "fifty",
+        "sixty",
+        "seventy",
+        "eighty",
+        "ninety",
+    ]
+    scales = ["", "thousand", "million", "billion", "trillion"]
+
+    def _three_digit_words(number: int) -> list[str]:
+        words: list[str] = []
+        hundreds, remainder = divmod(number, 100)
+        if hundreds:
+            words.extend([below_twenty[hundreds], "hundred"])
+            if remainder:
+                words.append("and")
+        if remainder:
+            if remainder < 20:
+                words.append(below_twenty[remainder])
+            else:
+                tens, ones = divmod(remainder, 10)
+                words.append(tens_words[tens])
+                if ones:
+                    words.append(below_twenty[ones])
+        return words
+
+    def _number_to_words(number: int) -> str:
+        if number == 0:
+            return "zero"
+        words: list[str] = []
+        scale_index = 0
+        while number > 0 and scale_index < len(scales):
+            number, remainder = divmod(number, 1000)
+            if remainder:
+                chunk_words = _three_digit_words(remainder)
+                if scales[scale_index]:
+                    chunk_words.append(scales[scale_index])
+                words = chunk_words + words
+            scale_index += 1
+        return " ".join(words)
+
+    parts = [f"{_number_to_words(taka)} taka"]
+    if paisa:
+        parts.append(f"{_number_to_words(paisa)} paisa")
+
+    return (" and ".join(parts)).capitalize()
+
+
 def _coerce_float(value: object, default: float = 0.0) -> float:
     if isinstance(value, str):
         value = value.strip()
@@ -6631,6 +6714,7 @@ def _regenerate_quotation_pdf_from_workbook(file_path: Path) -> Optional[bytes]:
     }
 
     grand_total_label = format_money(totals["grand_total"]) or f"{totals['grand_total']:,.2f}"
+    grand_total_words = format_amount_in_words(totals["grand_total"]) or grand_total_label
 
     try:
         return _build_quotation_pdf(
@@ -6875,7 +6959,7 @@ def _build_quotation_pdf(
         )
         story.append(Spacer(1, 6))
 
-    story.append(Paragraph(f"In Words: {grand_total_label}", styles["BodySmall"]))
+    story.append(Paragraph(f"In Words: {grand_total_words}", styles["BodySmall"]))
     story.append(Spacer(1, 16))
     story.append(Paragraph(closing, styles["BodySmall"]))
     story.append(Spacer(1, 30))
@@ -6950,6 +7034,7 @@ def _render_letterhead_preview(
             grand_total_value = item_total
 
     grand_total_label = _format_currency(grand_total_value) or grand_total
+    grand_total_words = format_amount_in_words(grand_total_value) or grand_total_label
 
     subject = html.escape(
         metadata.get("Subject")
@@ -7053,7 +7138,7 @@ def _render_letterhead_preview(
             </tbody>
           </table>
           {f"<div style='margin-top: 8px; font-size: 12px; color:#475569;'>Discount applied: {discount_label} (reflected above)</div>" if discount_label else ''}
-          <div style="margin-top: 10px; font-size: 13px;">In Words: {grand_total_label}</div>
+          <div style="margin-top: 10px; font-size: 13px;">In Words: {grand_total_words}</div>
           <div style="margin-top: 18px; font-size: 13px; line-height: 1.6;">{closing}</div>
           <div style="margin-top: 40px; font-size: 13px; line-height: 1.4;">
             <div>{prepared_by or ''}</div>
