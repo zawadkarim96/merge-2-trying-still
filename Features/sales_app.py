@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import hashlib
 import os
 import re
 import sqlite3
@@ -4582,42 +4583,70 @@ def render_quotations(user: Dict) -> None:
         column for column in display_df.columns if column != editable_column
     ]
 
-    edited_df = st.data_editor(
-        display_df,
-        hide_index=True,
-        use_container_width=True,
-        column_config={
-            editable_column: st.column_config.CheckboxColumn(
-                "Decline",
-                help="Select to mark the quotation as declined.",
-            )
-        },
-        disabled=disabled_columns,
-        key="quotation_table_editor",
-    )
-    st.caption("Checked rows will be recorded as declined when you leave the editor.")
+    decline_state_key = "_quotation_decline_table_state"
+    table_signature = hashlib.md5(
+        display_df.to_csv(index=False).encode("utf-8")
+    ).hexdigest()
+    decline_state = st.session_state.get(decline_state_key)
+    if not decline_state or decline_state.get("signature") != table_signature:
+        st.session_state[decline_state_key] = {
+            "signature": table_signature,
+            "data": display_df.copy(),
+        }
+        decline_state = st.session_state[decline_state_key]
 
-    decline_targets = (
-        edited_df.loc[
-            (edited_df[editable_column]) & (edited_df["status"] != "declined"),
-            "quotation_id",
-        ]
-        .dropna()
-        .astype(int)
-        .tolist()
-    )
+    working_df = decline_state.get("data", display_df).copy()
 
-    if decline_targets:
-        decline_quotations(decline_targets)
-        decline_labels = ", ".join(f"#{qid}" for qid in decline_targets[:5])
-        if len(decline_targets) > 5:
-            decline_labels += ", …"
-        notify_admin_activity(
-            f"Declined quotation(s) {decline_labels}",
-            user,
+    decline_form_key = "quotation_decline_editor"
+    save_declines = False
+    edited_df = working_df
+    with st.form(decline_form_key):
+        edited_df = st.data_editor(
+            working_df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                editable_column: st.column_config.CheckboxColumn(
+                    "Decline",
+                    help="Select to mark the quotation as declined.",
+                )
+            },
+            disabled=disabled_columns,
+            key="quotation_table_editor",
         )
-        st.success(f"Declined {len(decline_targets)} quotation(s).")
-        rerun()
+        st.caption(
+            "Checked rows will be recorded as declined when you save the table updates."
+        )
+        save_declines = st.form_submit_button(
+            "Save table updates", use_container_width=True
+        )
+
+    st.session_state[decline_state_key]["data"] = edited_df.copy()
+
+    if save_declines:
+        decline_targets = (
+            edited_df.loc[
+                (edited_df[editable_column]) & (edited_df["status"] != "declined"),
+                "quotation_id",
+            ]
+            .dropna()
+            .astype(int)
+            .tolist()
+        )
+
+        if decline_targets:
+            decline_quotations(decline_targets)
+            decline_labels = ", ".join(f"#{qid}" for qid in decline_targets[:5])
+            if len(decline_targets) > 5:
+                decline_labels += ", …"
+            notify_admin_activity(
+                f"Declined quotation(s) {decline_labels}",
+                user,
+            )
+            st.success(f"Declined {len(decline_targets)} quotation(s).")
+            rerun()
+        else:
+            st.info("No changes to save from the quotations table.")
 
 
 def render_work_orders(user: Dict) -> None:
