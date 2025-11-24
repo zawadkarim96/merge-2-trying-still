@@ -1996,6 +1996,7 @@ def parse_delivery_items_payload(value: Optional[str]) -> list[dict[str, object]
 def _reset_quotation_form_state() -> None:
     default_items = _default_quotation_items()
     st.session_state["quotation_item_rows"] = default_items
+    st.session_state.pop("quotation_form_initialized", None)
     for key in [
         "quotation_reference",
         "quotation_date",
@@ -7372,14 +7373,23 @@ def _render_quotation_section(conn):
     salesperson_seed = clean_text(user.get("username")) or ""
     salesperson_phone = clean_text(user.get("phone")) or ""
     salesperson_title_seed = clean_text(user.get("title")) or "Salesperson"
-    st.session_state.setdefault("quotation_prepared_by", salesperson_seed)
-    st.session_state.setdefault("quotation_salesperson_contact", salesperson_phone)
-    st.session_state.setdefault("quotation_salesperson_title", salesperson_title_seed)
+    initializing_form = not st.session_state.get("quotation_form_initialized")
+    if initializing_form:
+        st.session_state["quotation_form_initialized"] = True
+        st.session_state.setdefault("quotation_prepared_by", salesperson_seed)
+        st.session_state.setdefault("quotation_salesperson_contact", salesperson_phone)
+        st.session_state.setdefault("quotation_salesperson_title", salesperson_title_seed)
+        st.session_state.setdefault("quotation_date", default_date)
+        st.session_state.setdefault("quotation_quote_type", "Retail")
+        st.session_state.setdefault("quotation_salutation", "Dear Sir,")
+        st.session_state.setdefault(
+            "quotation_introduction",
+            "We thank you for your inquiry and are pleased to submit our best proposal as per the below details.",
+        )
+        st.session_state.setdefault(
+            "quotation_closing", "With Thanks & Kind Regards"
+        )
     can_edit_salesperson = current_user_is_admin()
-    if not can_edit_salesperson:
-        st.session_state["quotation_prepared_by"] = salesperson_seed
-        st.session_state["quotation_salesperson_contact"] = salesperson_phone
-        st.session_state["quotation_salesperson_title"] = salesperson_title_seed
 
     def _compute_line_total(row: pd.Series) -> float:
         qty = max(_coerce_float(row.get("quantity"), 0.0), 0.0)
@@ -7536,8 +7546,9 @@ def _render_quotation_section(conn):
             header_cols = st.columns((1.25, 0.75))
             with header_cols[0]:
                 st.caption("Compose, save and track quotations from a single workspace.")
-                template_choice = "PS letterhead"
-                st.session_state["quotation_letter_template"] = template_choice
+                template_choice = st.session_state.setdefault(
+                    "quotation_letter_template", "PS letterhead"
+                )
                 st.info(
                     "Using the PS letterhead automatically. Your quotation details are overlaid live.",
                     icon="🧾",
