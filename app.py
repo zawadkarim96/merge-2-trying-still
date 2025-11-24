@@ -1996,6 +1996,8 @@ def parse_delivery_items_payload(value: Optional[str]) -> list[dict[str, object]
 def _reset_quotation_form_state() -> None:
     default_items = _default_quotation_items()
     st.session_state["quotation_item_rows"] = default_items
+    st.session_state["quotation_preview_item_rows"] = [dict(row) for row in default_items]
+    st.session_state["quotation_preview_items_dirty"] = False
     st.session_state.pop("quotation_form_initialized", None)
     for key in [
         "quotation_reference",
@@ -7378,6 +7380,11 @@ def _render_quotation_section(conn):
 
     st.session_state.setdefault("quotation_item_rows", _default_quotation_items())
     st.session_state.setdefault("quotation_complete_item_rows", [])
+    st.session_state.setdefault(
+        "quotation_preview_item_rows",
+        [dict(row) for row in st.session_state["quotation_item_rows"]],
+    )
+    st.session_state.setdefault("quotation_preview_items_dirty", False)
 
     user = get_current_user()
     salesperson_seed = clean_text(user.get("username")) or ""
@@ -7711,7 +7718,7 @@ def _render_quotation_section(conn):
             )
 
             st.markdown("#### Product details")
-            items_toolbar = st.columns(3)
+            items_toolbar = st.columns(4)
             with items_toolbar[0]:
                 add_item = st.button(
                     "Add item", key="quotation_add_item", use_container_width=True
@@ -7724,12 +7731,19 @@ def _render_quotation_section(conn):
                 reset_items = st.button(
                     "Reset defaults", key="quotation_reset_items", use_container_width=True
                 )
+            with items_toolbar[3]:
+                apply_items_to_preview = st.button(
+                    "Update preview", key="quotation_update_preview", use_container_width=True
+                )
             if add_item:
                 st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
+                st.session_state["quotation_preview_items_dirty"] = True
             if clear_items:
                 st.session_state["quotation_item_rows"] = []
+                st.session_state["quotation_preview_items_dirty"] = True
             if reset_items:
                 st.session_state["quotation_item_rows"] = _default_quotation_items()
+                st.session_state["quotation_preview_items_dirty"] = True
 
             items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
             if not items_df_seed.empty:
@@ -7758,6 +7772,8 @@ def _render_quotation_section(conn):
                     "line_total",
                 ]
             ]
+
+            previous_rows = list(st.session_state["quotation_item_rows"])
 
             items_editor = st.data_editor(
                 items_df_seed,
@@ -7810,12 +7826,22 @@ def _render_quotation_section(conn):
             )
             edited_items = items_editor.copy()
             edited_items["line_total"] = edited_items.apply(_compute_line_total, axis=1)
-            st.session_state["quotation_item_rows"] = edited_items.to_dict("records")
+            new_rows = edited_items.to_dict("records")
+            st.session_state["quotation_item_rows"] = new_rows
             st.session_state["quotation_complete_item_rows"] = [
                 row
                 for row in st.session_state["quotation_item_rows"]
                 if _quotation_row_complete(row)
             ]
+            if new_rows != previous_rows:
+                st.session_state["quotation_preview_items_dirty"] = True
+
+            if apply_items_to_preview:
+                st.session_state["quotation_preview_item_rows"] = [
+                    dict(row) for row in st.session_state["quotation_item_rows"]
+                ]
+                st.session_state["quotation_preview_items_dirty"] = False
+                st.toast("Preview updated", icon="✅")
 
             closing_text = st.text_area(
                 "Closing / thanks",
@@ -7890,11 +7916,11 @@ def _render_quotation_section(conn):
                 st.toast("Quotation form reset", icon="ℹ️")
                 _safe_rerun()
 
-    preview_source = (
-        st.session_state.get("quotation_complete_item_rows")
-        or st.session_state.get("quotation_item_rows", [])
-    )
-    preview_items, preview_totals = normalize_quotation_items(preview_source)
+    preview_source = st.session_state.get("quotation_preview_item_rows") or []
+    preview_rows = [
+        row for row in preview_source if _quotation_row_complete(row)
+    ] or preview_source
+    preview_items, preview_totals = normalize_quotation_items(preview_rows)
     preview_grand_total = format_money(preview_totals.get("grand_total")) or f"{_coerce_float(preview_totals.get('grand_total'), 0.0):,.2f}"
     preview_metadata = {
         "Reference number": st.session_state.get("quotation_reference"),
@@ -7921,6 +7947,11 @@ def _render_quotation_section(conn):
 
     with preview_col:
         st.markdown("#### Live quotation preview")
+        if st.session_state.get("quotation_preview_items_dirty"):
+            st.info(
+                "Product details have changed; click **Update preview** in the table toolbar to refresh this view.",
+                icon="🕒",
+            )
         st.caption("Compose on the left and review the letterhead beside the form.")
         _render_letterhead_preview(
             preview_metadata,
@@ -12851,6 +12882,13 @@ def main():
         if st.session_state.get("nav_page") not in pages + ["Create Quotation"]:
             st.session_state["nav_page"] = st.session_state.get("page", pages[0])
 
+        nav_seed = (
+            st.session_state.get("nav_page")
+            if st.session_state.get("nav_page") in pages
+            else pages[0]
+        )
+        st.session_state["nav_selection"] = nav_seed
+
         previous_selection = st.session_state.get("nav_selection", pages[0])
         current_index = pages.index(previous_selection)
         page_choice = st.radio(
@@ -12870,8 +12908,6 @@ def main():
             st.session_state["nav_page"] = pages[0]
 
         page = st.session_state["nav_page"]
-        if page in pages:
-            st.session_state["nav_selection"] = page
         st.session_state.page = page
 
     show_expiry_notifications(conn)
