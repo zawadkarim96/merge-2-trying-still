@@ -14,7 +14,7 @@ import zipfile
 from calendar import monthrange
 from datetime import datetime, timedelta, date
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Mapping, Optional
 
 from dotenv import load_dotenv
 from textwrap import dedent
@@ -7377,6 +7377,7 @@ def _render_quotation_section(conn):
             st.write(message)
 
     st.session_state.setdefault("quotation_item_rows", _default_quotation_items())
+    st.session_state.setdefault("quotation_complete_item_rows", [])
 
     user = get_current_user()
     salesperson_seed = clean_text(user.get("username")) or ""
@@ -7405,6 +7406,25 @@ def _render_quotation_section(conn):
         rate_val = max(_coerce_float(row.get("rate"), 0.0), 0.0)
         discount_pct = _clamp_percentage(_coerce_float(row.get("discount"), 0.0))
         return max(qty * rate_val * (1 - discount_pct / 100.0), 0.0)
+
+    def _quotation_row_complete(row: Mapping[str, object]) -> bool:
+        if not isinstance(row, Mapping):
+            return False
+
+        required_text = (
+            clean_text(row.get("description")),
+            clean_text(row.get("kva")),
+            clean_text(row.get("specs")),
+        )
+        if not all(required_text):
+            return False
+
+        quantity = row.get("quantity")
+        rate_val = row.get("rate")
+        has_quantity = quantity not in (None, "")
+        has_rate = rate_val not in (None, "")
+
+        return has_quantity and has_rate
     customer_df = df_query(
         conn,
         """
@@ -7791,6 +7811,11 @@ def _render_quotation_section(conn):
             edited_items = items_editor.copy()
             edited_items["line_total"] = edited_items.apply(_compute_line_total, axis=1)
             st.session_state["quotation_item_rows"] = edited_items.to_dict("records")
+            st.session_state["quotation_complete_item_rows"] = [
+                row
+                for row in st.session_state["quotation_item_rows"]
+                if _quotation_row_complete(row)
+            ]
 
             closing_text = st.text_area(
                 "Closing / thanks",
@@ -7865,9 +7890,11 @@ def _render_quotation_section(conn):
                 st.toast("Quotation form reset", icon="ℹ️")
                 _safe_rerun()
 
-    preview_items, preview_totals = normalize_quotation_items(
-        st.session_state.get("quotation_item_rows", [])
+    preview_source = (
+        st.session_state.get("quotation_complete_item_rows")
+        or st.session_state.get("quotation_item_rows", [])
     )
+    preview_items, preview_totals = normalize_quotation_items(preview_source)
     preview_grand_total = format_money(preview_totals.get("grand_total")) or f"{_coerce_float(preview_totals.get('grand_total'), 0.0):,.2f}"
     preview_metadata = {
         "Reference number": st.session_state.get("quotation_reference"),
@@ -7904,7 +7931,10 @@ def _render_quotation_section(conn):
         )
 
         if submit:
-            item_records = st.session_state.get("quotation_item_rows", [])
+            item_records = (
+                st.session_state.get("quotation_complete_item_rows")
+                or st.session_state.get("quotation_item_rows", [])
+            )
             prepared_items = [dict(item) for item in item_records]
             for item in prepared_items:
                 if item.get("discount") in (None, ""):
@@ -12790,7 +12820,6 @@ def main():
                 "Dashboard",
                 "Work done",
                 "Delivery Orders",
-                "Create Quotation",
                 "Customers",
                 "Customer Summary",
                 "Scraps",
@@ -12807,7 +12836,6 @@ def main():
                 "Dashboard",
                 "Work done",
                 "Delivery Orders",
-                "Create Quotation",
                 "Customers",
                 "Customer Summary",
                 "Warranties",
@@ -12815,17 +12843,35 @@ def main():
                 "Reports",
                 "Maintenance and Service",
             ]
-        if st.session_state.get("nav_page") not in pages:
+
+        st.session_state.setdefault("nav_selection", pages[0])
+        if st.session_state.get("nav_selection") not in pages:
+            st.session_state["nav_selection"] = pages[0]
+
+        if st.session_state.get("nav_page") not in pages + ["Create Quotation"]:
             st.session_state["nav_page"] = st.session_state.get("page", pages[0])
+
+        previous_selection = st.session_state.get("nav_selection", pages[0])
+        current_index = pages.index(previous_selection)
+        page_choice = st.radio(
+            "Navigate", pages, index=current_index, key="nav_selection"
+        )
+        selection_changed = page_choice != previous_selection
+
         if create_quote:
             st.session_state["nav_page"] = "Create Quotation"
-        if st.session_state["nav_page"] not in pages:
+        elif st.session_state.get("nav_page") == "Create Quotation":
+            if selection_changed:
+                st.session_state["nav_page"] = page_choice
+        else:
+            st.session_state["nav_page"] = page_choice
+
+        if st.session_state.get("nav_page") not in pages + ["Create Quotation"]:
             st.session_state["nav_page"] = pages[0]
-        current_index = pages.index(st.session_state["nav_page"])
-        page_choice = st.radio(
-            "Navigate", pages, index=current_index, key="nav_page"
-        )
-        page = page_choice
+
+        page = st.session_state["nav_page"]
+        if page in pages:
+            st.session_state["nav_selection"] = page
         st.session_state.page = page
 
     show_expiry_notifications(conn)
