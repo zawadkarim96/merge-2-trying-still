@@ -12807,6 +12807,8 @@ def main():
             ]
         if st.session_state.get("nav_page") not in pages:
             st.session_state["nav_page"] = st.session_state.get("page", pages[0])
+        if create_quote:
+            st.session_state["nav_page"] = "Create Quotation"
         if st.session_state["nav_page"] not in pages:
             st.session_state["nav_page"] = pages[0]
         current_index = pages.index(st.session_state["nav_page"])
@@ -12814,9 +12816,6 @@ def main():
             "Navigate", pages, index=current_index, key="nav_page"
         )
         page = page_choice
-        if create_quote:
-            page = "Create Quotation"
-            st.session_state["nav_page"] = page
         st.session_state.page = page
 
     show_expiry_notifications(conn)
