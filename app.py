@@ -3444,12 +3444,15 @@ def dashboard(conn):
     quick_links = st.columns(3)
     if quick_links[0].button("Work done", key="dashboard_work_done_link"):
         st.session_state.page = "Work done"
+        st.session_state["nav_page"] = "Work done"
         _safe_rerun()
     if quick_links[1].button("Delivery orders", key="dashboard_delivery_orders_link"):
         st.session_state.page = "Delivery Orders"
+        st.session_state["nav_page"] = "Delivery Orders"
         _safe_rerun()
     if quick_links[2].button("Create quotation", key="dashboard_create_quotation_link"):
         st.session_state.page = "Create Quotation"
+        st.session_state["nav_page"] = "Create Quotation"
         _safe_rerun()
     user = st.session_state.user or {}
     is_admin = user.get("role") == "admin"
@@ -12802,18 +12805,18 @@ def main():
                 "Reports",
                 "Maintenance and Service",
             ]
-        nav_pages = [page for page in pages if page != "Create Quotation"]
-        if not nav_pages:
-            nav_pages = pages
-        if st.session_state.get("nav_page") not in nav_pages:
-            st.session_state["nav_page"] = nav_pages[0]
-        current_index = nav_pages.index(st.session_state["nav_page"])
+        if st.session_state.get("nav_page") not in pages:
+            st.session_state["nav_page"] = st.session_state.get("page", pages[0])
+        if st.session_state["nav_page"] not in pages:
+            st.session_state["nav_page"] = pages[0]
+        current_index = pages.index(st.session_state["nav_page"])
         page_choice = st.radio(
-            "Navigate", nav_pages, index=current_index, key="nav_page"
+            "Navigate", pages, index=current_index, key="nav_page"
         )
         page = page_choice
         if create_quote:
             page = "Create Quotation"
+            st.session_state["nav_page"] = page
         st.session_state.page = page
 
     show_expiry_notifications(conn)
