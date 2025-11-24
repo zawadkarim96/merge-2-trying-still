@@ -6730,6 +6730,7 @@ def _regenerate_quotation_pdf_from_workbook(file_path: Path) -> Optional[bytes]:
             items=items,
             totals=totals,
             grand_total_label=grand_total_label,
+            grand_total_words=grand_total_words,
         )
     except Exception:
         return None
@@ -6774,6 +6775,7 @@ def _build_quotation_pdf(
     totals: dict[str, float],
     grand_total_label: str,
     template_choice: Optional[str] = None,
+    grand_total_words: Optional[str] = None,
 ) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -6971,6 +6973,10 @@ def _build_quotation_pdf(
     story.append(Spacer(1, 10))
 
     discount_value = _coerce_float(totals.get("discount_total") if totals else None, 0.0)
+    if not grand_total_words:
+        amount_in_words = format_amount_in_words(totals.get("grand_total"))
+        grand_total_words = amount_in_words or grand_total_label
+
     if discount_value:
         discount_label = format_money(discount_value) or f"{discount_value:,.2f}"
         story.append(
@@ -7975,12 +7981,16 @@ def _render_quotation_section(conn):
                 items=workbook_items,
                 totals=totals_rows,
             )
+            grand_total_label = format_money(grand_total_value) or f"{grand_total_value:,.2f}"
+            grand_total_words = format_amount_in_words(grand_total_value) or grand_total_label
+
             pdf_bytes = _build_quotation_pdf(
                 metadata=metadata,
                 items=items_clean,
                 totals=totals_data,
-                grand_total_label=format_money(grand_total_value) or f"{grand_total_value:,.2f}",
+                grand_total_label=grand_total_label,
                 template_choice=template_choice,
+                grand_total_words=grand_total_words,
             )
 
             display_df = pd.DataFrame(workbook_items)
