@@ -7038,6 +7038,10 @@ def _render_letterhead_preview(
 
     grand_total_value = _coerce_float(totals.get("grand_total"), 0.0)
     if grand_total_value <= 0:
+        parsed_grand_total = parse_amount(totals.get("grand_total"))
+        if parsed_grand_total is not None:
+            grand_total_value = parsed_grand_total
+    if grand_total_value <= 0:
         parsed_from_label = parse_amount(grand_total)
         if parsed_from_label is not None:
             grand_total_value = parsed_from_label
