@@ -1647,6 +1647,7 @@ def normalize_quotation_items(
 
         kva = clean_text(entry.get("kva"))
         specs = clean_text(entry.get("specs"))
+        note = clean_text(entry.get("note"))
         quantity = max(_coerce_float(entry.get("quantity"), 0.0), 0.0)
         rate = max(_coerce_float(entry.get("rate"), 0.0), 0.0)
         discount_pct = _clamp_percentage(_coerce_float(entry.get("discount"), 0.0))
@@ -1667,6 +1668,7 @@ def normalize_quotation_items(
             "Description": description,
             "kVA": kva,
             "Specs": specs,
+            "Note": note,
             "Quantity": quantity,
             "Rate": rate,
             "Gross amount": gross_amount,
@@ -1912,6 +1914,7 @@ def _default_quotation_items() -> list[dict[str, object]]:
             "description": "",
             "kva": "",
             "specs": "",
+            "note": "",
             "quantity": 1.0,
             "rate": 0.0,
             "discount": 0.0,
@@ -6892,10 +6895,24 @@ def _build_quotation_pdf(
     ]
 
     for idx, item in enumerate(items, start=1):
-        description_parts = [
-            clean_text(item.get("Description")) or clean_text(item.get("description")) or "Item",
-            clean_text(item.get("Specs")) or "",
-        ]
+        description_parts = []
+        description_parts.append(
+            html.escape(
+                clean_text(item.get("Description"))
+                or clean_text(item.get("description"))
+                or "Item"
+            )
+        )
+        specs_text = clean_text(item.get("Specs")) or ""
+        note_text = clean_text(item.get("Note")) or clean_text(item.get("note")) or ""
+        if specs_text:
+            description_parts.append(
+                f"<font color='#475569'>{html.escape(specs_text)}</font>"
+            )
+        if note_text:
+            description_parts.append(
+                f"<font color='#94a3b8' size='9'>{html.escape(note_text)}</font>"
+            )
         description = "<br/>".join(filter(None, description_parts))
         qty_value = _coerce_float(item.get("Quantity") or item.get("quantity"), 0.0)
         rate_value = item.get("Rate") if "Rate" in item else item.get("unit_price")
@@ -6979,22 +6996,27 @@ def _build_quotation_pdf(
 
 
 def _load_letterhead_data_uri(template_choice: Optional[str] = None) -> Optional[str]:
-    template_choice = template_choice or "ps_letterhead.png"
-    candidates = [
-        Path("ps_letterhead.png"),
-        Path("assets/ps_letterhead.png"),
-        Path("letterhead"),
-    ]
+    """Load the configured letterhead into a data URI for the live preview."""
 
-    for path in candidates:
-        if path.exists():
-            mime = "image/png" if path.suffix.lower() == ".png" else "application/pdf"
-            encoded = base64.b64encode(path.read_bytes()).decode("utf-8")
-            suffix = "#page=1" if mime == "application/pdf" else ""
-            return f"data:{mime};base64,{encoded}{suffix}"
+    template_path = _resolve_letterhead_path(template_choice)
+    if not template_path:
+        st.warning(
+            "Letterhead template missing. Upload ps_letterhead.png to see the preview.",
+            icon="⚠️",
+        )
+        return None
 
-    st.warning("Letterhead template missing. Upload ps_letterhead.png to see the preview.", icon="⚠️")
-    return None
+    try:
+        mime = "image/png" if template_path.suffix.lower() == ".png" else "application/pdf"
+        encoded = base64.b64encode(template_path.read_bytes()).decode("utf-8")
+        suffix = "#page=1" if mime == "application/pdf" else ""
+        return f"data:{mime};base64,{encoded}{suffix}"
+    except OSError:
+        st.warning(
+            "Could not read the letterhead file. Please re-upload it and try again.",
+            icon="⚠️",
+        )
+        return None
 
 
 def _render_letterhead_preview(
@@ -7033,8 +7055,12 @@ def _render_letterhead_preview(
         if item_total > 0:
             grand_total_value = item_total
 
-    grand_total_label = _format_currency(grand_total_value) or grand_total
-    grand_total_words = format_amount_in_words(grand_total_value) or grand_total_label
+    grand_total_label = _format_currency(grand_total_value) if grand_total_value > 0 else "—"
+    grand_total_words = (
+        format_amount_in_words(grand_total_value)
+        if grand_total_value > 0
+        else "Add item pricing to calculate totals"
+    )
 
     subject = html.escape(
         metadata.get("Subject")
@@ -7080,11 +7106,19 @@ def _render_letterhead_preview(
     for idx, item in enumerate(line_items, start=1):
         title = html.escape(clean_text(item.get("Description")) or "Item")
         specs = html.escape(clean_text(item.get("Specs")) or "")
+        note = html.escape(clean_text(item.get("Note")) or clean_text(item.get("note")) or "")
         qty = _coerce_float(item.get("Quantity"), 0.0)
         qty_display = f"{int(qty)}" if math.isclose(qty, round(qty)) else f"{qty:,.2f}"
         rate_display = _format_currency(item.get("Rate"))
         total_display = _format_currency(item.get("Line total"))
-        detail_block = f"{title}<br/><span style='color:#475569;'>{specs}</span>" if specs else title
+        detail_lines = [title]
+        if specs:
+            detail_lines.append(f"<span style='color:#475569;'>{specs}</span>")
+        if note:
+            detail_lines.append(
+                f"<span style='color:#94a3b8; font-size:12px;'>{note}</span>"
+            )
+        detail_block = "<br/>".join(detail_lines)
         rows_markup.append(
             f"<tr>"
             f"<td style='padding:6px; text-align:center; border:1px solid #cbd5e1;'>{idx}</td>"
@@ -7105,50 +7139,52 @@ def _render_letterhead_preview(
 
     address_block = "<br/>".join(filter(None, [customer, contact, address, district]))
 
-    preview_html = f"""
-    <div style="margin-top: 1rem; display: flex; justify-content: center;">
-      <div style="position: relative; width: 940px; min-height: 1100px; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; box-shadow: 0 18px 48px rgba(15, 23, 42, 0.14); background: #f8fafc;">
-        <div style="position: absolute; inset: 0; background: url('{data_uri}') no-repeat center top / contain; opacity: 0.95;"></div>
-        <div style="position: relative; padding: 130px 72px 90px 72px; color: #0f172a; font-family: 'Arial', sans-serif;">
-          <div style="text-align: right; font-size: 13px; line-height: 1.5;">
-            <div><strong>Date:</strong> {date_value or '—'}</div>
-            <div><strong>Ref:</strong> {reference or '—'}</div>
-          </div>
-          <div style="margin-top: 12px; font-size: 13px; line-height: 1.6;">
-            <div><strong>To</strong></div>
-            <div>{address_block or '—'}</div>
-          </div>
-          <div style="margin-top: 8px; font-size: 13px;"><strong>Attention:</strong> {attention_name or '—'}</div>
-          <div style="margin-top: 10px; font-size: 13px;"><strong>Subject:</strong> {subject}</div>
-          <div style="margin-top: 12px; font-size: 13px; line-height: 1.65;">{salutation} {intro}</div>
-          <div style="margin-top: 14px; font-size: 13px; font-weight: 700;">PRICE SCHEDULE</div>
-          <table style="width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12.5px;">
-            <thead>
-              <tr style="background: #e2e8f0;">
-                <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: center;">Sl No.</th>
-                <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: left;">Description of Generator</th>
-                <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: center;">Qty.</th>
-                <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: right;">Unit Price, Tk.</th>
-                <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: right;">Total Price, Tk.</th>
-              </tr>
-            </thead>
-            <tbody>
-              {''.join(rows_markup) or '<tr><td colspan="5" style="padding:8px; text-align:center; border:1px solid #cbd5e1; color:#64748b;">Add items to see the price schedule.</td></tr>'}
-              {total_row}
-            </tbody>
-          </table>
-          {f"<div style='margin-top: 8px; font-size: 12px; color:#475569;'>Discount applied: {discount_label} (reflected above)</div>" if discount_label else ''}
-          <div style="margin-top: 10px; font-size: 13px;">In Words: {grand_total_words}</div>
-          <div style="margin-top: 18px; font-size: 13px; line-height: 1.6;">{closing}</div>
-          <div style="margin-top: 40px; font-size: 13px; line-height: 1.4;">
-            <div>{prepared_by or ''}</div>
-            <div>{prepared_title or ''}</div>
-            <div>{prepared_contact or ''}</div>
+    preview_html = dedent(
+        f"""
+        <div style="margin-top: 1rem; display: flex; justify-content: center;">
+          <div style="position: relative; width: 940px; min-height: 1100px; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; box-shadow: 0 18px 48px rgba(15, 23, 42, 0.14); background: #f8fafc;">
+            <div style="position: absolute; inset: 0; background: url('{data_uri}') no-repeat center top / contain; opacity: 0.95;"></div>
+            <div style="position: relative; padding: 130px 72px 90px 72px; color: #0f172a; font-family: 'Arial', sans-serif;">
+              <div style="text-align: right; font-size: 13px; line-height: 1.5;">
+                <div><strong>Date:</strong> {date_value or '—'}</div>
+                <div><strong>Ref:</strong> {reference or '—'}</div>
+              </div>
+              <div style="margin-top: 12px; font-size: 13px; line-height: 1.6;">
+                <div><strong>To</strong></div>
+                <div>{address_block or '—'}</div>
+              </div>
+              <div style="margin-top: 8px; font-size: 13px;"><strong>Attention:</strong> {attention_name or '—'}</div>
+              <div style="margin-top: 10px; font-size: 13px;"><strong>Subject:</strong> {subject}</div>
+              <div style="margin-top: 12px; font-size: 13px; line-height: 1.65;">{salutation} {intro}</div>
+              <div style="margin-top: 14px; font-size: 13px; font-weight: 700;">PRICE SCHEDULE</div>
+              <table style="width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12.5px;">
+                <thead>
+                  <tr style="background: #e2e8f0;">
+                    <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: center;">Sl No.</th>
+                    <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: left;">Description of Generator</th>
+                    <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: center;">Qty.</th>
+                    <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: right;">Unit Price, Tk.</th>
+                    <th style="padding: 6px; border: 1px solid #cbd5e1; text-align: right;">Total Price, Tk.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {''.join(rows_markup) or '<tr><td colspan="5" style="padding:8px; text-align:center; border:1px solid #cbd5e1; color:#64748b;">Add items to see the price schedule.</td></tr>'}
+                  {total_row}
+                </tbody>
+              </table>
+              {f"<div style='margin-top: 8px; font-size: 12px; color:#475569;'>Discount applied: {discount_label} (reflected above)</div>" if discount_label else ''}
+              <div style="margin-top: 10px; font-size: 13px;">In Words: {grand_total_words}</div>
+              <div style="margin-top: 18px; font-size: 13px; line-height: 1.6;">{closing}</div>
+              <div style="margin-top: 40px; font-size: 13px; line-height: 1.4;">
+                <div>{prepared_by or ''}</div>
+                <div>{prepared_title or ''}</div>
+                <div>{prepared_contact or ''}</div>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
-    </div>
-    """
+        """
+    )
 
     st.markdown("##### Letterhead preview", help="Your quotation details overlaid on the provided letterhead.")
     st.markdown(preview_html, unsafe_allow_html=True)
@@ -7655,18 +7691,27 @@ def _render_quotation_section(conn):
                 for legacy_col, new_col in (("hsn", "specs"), ("unit", "kva")):
                     if legacy_col in items_df_seed.columns and new_col not in items_df_seed.columns:
                         items_df_seed[new_col] = items_df_seed[legacy_col]
-                for required in ["kva", "specs"]:
+                for required in ["kva", "specs", "note"]:
                     if required not in items_df_seed.columns:
                         items_df_seed[required] = ""
                 items_df_seed = items_df_seed[
-                    ["description", "kva", "specs", "quantity", "rate", "discount"]
+                    ["description", "kva", "specs", "note", "quantity", "rate", "discount"]
                 ]
             if items_df_seed.empty:
                 items_df_seed = pd.DataFrame(_default_quotation_items())
 
             items_df_seed["line_total"] = items_df_seed.apply(_compute_line_total, axis=1)
             items_df_seed = items_df_seed[
-                ["description", "kva", "specs", "quantity", "rate", "discount", "line_total"]
+                [
+                    "description",
+                    "kva",
+                    "specs",
+                    "note",
+                    "quantity",
+                    "rate",
+                    "discount",
+                    "line_total",
+                ]
             ]
 
             items_editor = st.data_editor(
@@ -7685,6 +7730,10 @@ def _render_quotation_section(conn):
                     ),
                     "specs": st.column_config.TextColumn(
                         "Specs", help="Key specifications or notes"
+                    ),
+                    "note": st.column_config.TextColumn(
+                        "Small description",
+                        help="Optional short note shown in smaller text",
                     ),
                     "quantity": st.column_config.NumberColumn(
                         "Quantity",
