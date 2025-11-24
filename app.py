@@ -7985,6 +7985,36 @@ def _render_quotation_management(conn):
     editable_df = quotes_df[~locked_mask].copy()
     locked_df = quotes_df[locked_mask].copy()
 
+    tracker_state_key = "quotation_tracker_rows"
+
+    def _normalize_tracker_rows(rows: Iterable[dict[str, object]]):
+        normalized: list[dict[str, object]] = []
+        for row in rows:
+            normalized_row: dict[str, object] = {}
+            for col in editable_df.columns:
+                value = row.get(col)
+                if col == "follow_up_date":
+                    value = _as_editable_date(value)
+                normalized_row[col] = value
+            normalized.append(normalized_row)
+        return normalized
+
+    current_records = _normalize_tracker_rows(editable_df.to_dict("records"))
+    tracker_state: list[dict[str, object]] = st.session_state.get(tracker_state_key, [])
+    current_ids = {row.get("quotation_id") for row in current_records}
+    state_ids = {row.get("quotation_id") for row in tracker_state}
+    if (
+        not tracker_state
+        or current_ids != state_ids
+        or len(tracker_state) != len(current_records)
+    ):
+        tracker_state = current_records
+        st.session_state[tracker_state_key] = tracker_state
+
+    tracker_df = pd.DataFrame(tracker_state)
+    tracker_df = tracker_df[[col for col in editable_df.columns if col in tracker_df.columns]]
+    tracker_df = tracker_df.reindex(columns=editable_df.columns)
+
     edit_config = {
         "status": st.column_config.TextColumn("Status", disabled=True),
         "follow_up_status": st.column_config.TextColumn(
@@ -8016,17 +8046,24 @@ def _render_quotation_management(conn):
     edited_records: list[dict[str, object]] = []
     if not editable_df.empty:
         edited = st.data_editor(
-            editable_df,
+            tracker_df,
             hide_index=True,
             use_container_width=True,
             column_config=edit_config,
             key="quotation_tracker_editor",
         )
-        edited_records = edited.to_dict("records") if isinstance(edited, pd.DataFrame) else []
+        if isinstance(edited, pd.DataFrame):
+            edited_records = _normalize_tracker_rows(edited.to_dict("records"))
+            st.session_state[tracker_state_key] = edited_records
     else:
         st.info("No pending quotations to update.")
 
-    if st.button("Save quotation updates", key="quotation_tracker_save"):
+    save_disabled = editable_df.empty or not edited_records
+    if st.button(
+        "Save quotation updates",
+        key="quotation_tracker_save",
+        disabled=save_disabled,
+    ) and edited_records:
         result = _update_quotation_records(conn, edited_records)
         updated_count = len(result.get("updated", []))
         locked_count = len(result.get("locked", []))
@@ -8184,7 +8221,7 @@ def _render_quotation_management(conn):
                 "Follow-up date",
                 value=follow_up_date_seed or date.today(),
                 key="quotation_detail_follow_up_date",
-                format="%d-%m-%Y",
+                format="DD-MM-YYYY",
             )
     with col_right:
         follow_up_notes_input = st.text_area(
