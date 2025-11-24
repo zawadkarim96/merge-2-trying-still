@@ -182,50 +182,75 @@ def prepare_report_grid_payload(rows: Iterable[dict]) -> Optional[str]:
     return json.dumps(normalized, ensure_ascii=False)
 
 
-def _import_report_grid_from_file(uploaded_file) -> list[dict[str, object]]:
-    """Parse an uploaded spreadsheet into report grid rows.
+def _normalize_header(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.strip().lower())
 
-    Supports CSV and Excel formats. Column headers are matched against
-    ``REPORT_GRID_FIELDS`` labels and keys (case-insensitive).
-    """
 
-    if uploaded_file is None:
-        return []
-
-    name = uploaded_file.name.lower()
-    try:
-        if name.endswith(".csv"):
-            raw_df = pd.read_csv(uploaded_file)
-        else:
-            raw_df = pd.read_excel(uploaded_file)
-    except Exception:
-        return []
-
-    if raw_df.empty:
-        return []
-
-    def _normalize_header(value: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "_", value.strip().lower())
+def _suggest_report_column_mapping(columns: Iterable[str]) -> dict[str, str]:
+    """Suggest a mapping from target fields to uploaded columns."""
 
     header_map: dict[str, str] = {}
     for key, config in REPORT_GRID_FIELDS.items():
         header_map[_normalize_header(key)] = key
         header_map[_normalize_header(config["label"])] = key
 
-    column_mapping: dict[str, str] = {}
-    for col in raw_df.columns:
+    suggestions: dict[str, str] = {}
+    for col in columns:
         normalized = _normalize_header(str(col))
         target = header_map.get(normalized)
-        if target:
-            column_mapping[col] = target
+        if target and target not in suggestions:
+            suggestions[target] = col
+    return suggestions
+
+
+def _load_report_grid_dataframe(file_bytes: bytes, filename: str) -> Optional[pd.DataFrame]:
+    """Convert uploaded file content into a DataFrame for report imports."""
+
+    name = filename.lower()
+    if not file_bytes:
+        return None
+    buffer = io.BytesIO(file_bytes)
+    try:
+        if name.endswith(".csv"):
+            return pd.read_csv(buffer)
+        return pd.read_excel(buffer)
+    except Exception:
+        return None
+
+
+def _import_report_grid_from_dataframe(
+    raw_df: Optional[pd.DataFrame], column_mapping: Optional[dict[str, str]] = None
+) -> list[dict[str, object]]:
+    """Parse a DataFrame into report grid rows with optional custom mapping."""
 
     imported_rows: list[dict[str, object]] = []
-    if not column_mapping:
+    if raw_df is None or raw_df.empty:
+        return imported_rows
+
+    header_map: dict[str, str] = {}
+    for key, config in REPORT_GRID_FIELDS.items():
+        header_map[_normalize_header(key)] = key
+        header_map[_normalize_header(config["label"])] = key
+
+    resolved_mapping: dict[str, str] = {}
+    if column_mapping:
+        for source, target in column_mapping.items():
+            if source in raw_df.columns and target in REPORT_GRID_FIELDS:
+                resolved_mapping[source] = target
+
+    if not resolved_mapping:
+        for col in raw_df.columns:
+            normalized = _normalize_header(str(col))
+            target = header_map.get(normalized)
+            if target:
+                resolved_mapping[col] = target
+
+    if not resolved_mapping:
         return imported_rows
 
     for _, row in raw_df.iterrows():
         entry = _default_report_grid_row()
-        for source, target in column_mapping.items():
+        for source, target in resolved_mapping.items():
             value = row.get(source)
             config = REPORT_GRID_FIELDS.get(target, {})
             if config.get("type") == "number":
@@ -238,6 +263,24 @@ def _import_report_grid_from_file(uploaded_file) -> list[dict[str, object]]:
             imported_rows.append(entry)
 
     return imported_rows
+
+
+def _import_report_grid_from_file(
+    uploaded_file, column_mapping: Optional[dict[str, str]] = None
+) -> list[dict[str, object]]:
+    """Parse an uploaded spreadsheet into report grid rows.
+
+    Supports CSV and Excel formats. Column headers are matched against
+    ``REPORT_GRID_FIELDS`` labels and keys (case-insensitive). A custom
+    ``column_mapping`` can be supplied to map uploaded columns to fields.
+    """
+
+    if uploaded_file is None:
+        return []
+
+    file_bytes = uploaded_file.getvalue()
+    dataframe = _load_report_grid_dataframe(file_bytes, uploaded_file.name)
+    return _import_report_grid_from_dataframe(dataframe, column_mapping)
 
 
 def format_report_grid_rows_for_display(
@@ -2815,7 +2858,6 @@ def _build_quotations_export(conn) -> pd.DataFrame:
                customer_address,
                customer_district,
                attention_name,
-               attention_title,
                subject,
                total_amount,
                discount_pct,
@@ -2848,7 +2890,6 @@ def _build_quotations_export(conn) -> pd.DataFrame:
             "customer_address": "Address",
             "customer_district": "District",
             "attention_name": "Attention",
-            "attention_title": "Attention title",
             "subject": "Subject",
             "total_amount": "Total amount",
             "discount_pct": "Discount (%)",
@@ -3510,12 +3551,6 @@ def dashboard(conn):
                     st.markdown(
                         f"**Period:** {format_period_range(record.get('period_start'), record.get('period_end'))}"
                     )
-                    st.markdown("**Tasks completed**")
-                    st.write(clean_text(record.get("tasks")) or "—")
-                    st.markdown("**Remarks / blockers**")
-                    st.write(clean_text(record.get("remarks")) or "—")
-                    st.markdown("**Research / learnings**")
-                    st.write(clean_text(record.get("research")) or "—")
                     submitted_label = (
                         format_time_ago(record.get("created_at"))
                         or format_period_range(record.get("created_at"), record.get("created_at"))
@@ -3523,6 +3558,39 @@ def dashboard(conn):
                     updated_label = (
                         format_time_ago(record.get("updated_at"))
                         or format_period_range(record.get("updated_at"), record.get("updated_at"))
+                    )
+                    st.markdown("**Tasks completed**")
+                    st.write(clean_text(record.get("tasks")) or "—")
+                    st.markdown("**Remarks / blockers**")
+                    st.write(clean_text(record.get("remarks")) or "—")
+                    st.markdown("**Research / learnings**")
+                    st.write(clean_text(record.get("research")) or "—")
+                    summary_lines = [
+                        f"Daily submission for {selected_staff_name}",
+                        f"Date: {format_period_range(record.get('period_start'), record.get('period_end'))}",
+                        "",
+                        "Tasks completed:",
+                        clean_text(record.get("tasks")) or "—",
+                        "",
+                        "Remarks / blockers:",
+                        clean_text(record.get("remarks")) or "—",
+                        "",
+                        "Research / learnings:",
+                        clean_text(record.get("research")) or "—",
+                        "",
+                        f"Submitted: {submitted_label}",
+                        f"Last updated: {updated_label}",
+                    ]
+                    summary_payload = "\n".join(summary_lines)
+                    download_name = _sanitize_path_component(
+                        f"daily_submission_{selected_staff_name}_{report_iso}"
+                    )
+                    st.download_button(
+                        "Download daily submission",
+                        data=summary_payload.encode("utf-8"),
+                        file_name=f"{download_name or 'daily_submission'}.txt",
+                        mime="text/plain",
+                        key=f"dashboard_daily_submission_{record.get('report_id')}",
                     )
                     st.caption(
                         f"Submitted {submitted_label} • Last updated {updated_label}"
@@ -6650,7 +6718,6 @@ def _build_quotation_pdf(
     customer_address = metadata.get("Customer address") or ""
     customer_district = metadata.get("Customer district") or ""
     attention_name = metadata.get("Attention name") or "—"
-    attention_title = metadata.get("Attention title") or ""
     prepared_by = metadata.get("Salesperson name") or "—"
     prepared_title = metadata.get("Salesperson title") or ""
     prepared_contact = metadata.get("Salesperson contact") or ""
@@ -6713,7 +6780,7 @@ def _build_quotation_pdf(
     story.append(Spacer(1, 6))
     story.append(
         Paragraph(
-            f"<b>Attention:</b> {attention_name} {attention_title}",
+            f"<b>Attention:</b> {attention_name}",
             styles["BodySmall"],
         )
     )
@@ -6796,6 +6863,17 @@ def _build_quotation_pdf(
     )
     story.append(pricing_table)
     story.append(Spacer(1, 10))
+
+    discount_value = _coerce_float(totals.get("discount_total") if totals else None, 0.0)
+    if discount_value:
+        discount_label = format_money(discount_value) or f"{discount_value:,.2f}"
+        story.append(
+            Paragraph(
+                f"Discount applied: {discount_label} (reflected in totals)",
+                styles["Muted"],
+            )
+        )
+        story.append(Spacer(1, 6))
 
     story.append(Paragraph(f"In Words: {grand_total_label}", styles["BodySmall"]))
     story.append(Spacer(1, 16))
@@ -6884,9 +6962,14 @@ def _render_letterhead_preview(
     prepared_title = html.escape(metadata.get("Salesperson title", ""))
     prepared_contact = html.escape(metadata.get("Salesperson contact", ""))
     attention_name = html.escape(metadata.get("Attention name", ""))
-    attention_title = html.escape(metadata.get("Attention title", ""))
 
     line_items = items[:8]
+    discount_value = _coerce_float(totals.get("discount_total") if totals else None, 0.0)
+    discount_label = (
+        format_money(discount_value) or f"{discount_value:,.2f}"
+        if discount_value
+        else ""
+    )
     rows_markup = []
     for idx, item in enumerate(line_items, start=1):
         title = html.escape(clean_text(item.get("Description")) or "Item")
@@ -6929,7 +7012,7 @@ def _render_letterhead_preview(
             <div><strong>To</strong></div>
             <div>{address_block or '—'}</div>
           </div>
-          <div style="margin-top: 8px; font-size: 13px;"><strong>Attention:</strong> {attention_name or '—'} {attention_title or ''}</div>
+          <div style="margin-top: 8px; font-size: 13px;"><strong>Attention:</strong> {attention_name or '—'}</div>
           <div style="margin-top: 10px; font-size: 13px;"><strong>Subject:</strong> {subject}</div>
           <div style="margin-top: 12px; font-size: 13px; line-height: 1.65;">{salutation} {intro}</div>
           <div style="margin-top: 14px; font-size: 13px; font-weight: 700;">PRICE SCHEDULE</div>
@@ -6948,6 +7031,7 @@ def _render_letterhead_preview(
               {total_row}
             </tbody>
           </table>
+          {f"<div style='margin-top: 8px; font-size: 12px; color:#475569;'>Discount applied: {discount_label} (reflected above)</div>" if discount_label else ''}
           <div style="margin-top: 10px; font-size: 13px;">In Words: {grand_total}</div>
           <div style="margin-top: 18px; font-size: 13px; line-height: 1.6;">{closing}</div>
           <div style="margin-top: 40px; font-size: 13px; line-height: 1.4;">
@@ -7420,11 +7504,7 @@ def _render_quotation_section(conn):
                     value=st.session_state.get("quotation_attention_name", ""),
                     key="quotation_attention_name",
                 )
-                attention_title = st.text_input(
-                    "Attention title",
-                    value=st.session_state.get("quotation_attention_title", ""),
-                    key="quotation_attention_title",
-                )
+                attention_title = ""
 
             subject_line = st.text_input(
                 "Subject",
@@ -7630,7 +7710,6 @@ def _render_quotation_section(conn):
         "Salesperson title": st.session_state.get("quotation_salesperson_title"),
         "Salesperson contact": st.session_state.get("quotation_salesperson_contact"),
         "Attention name": st.session_state.get("quotation_attention_name"),
-        "Attention title": st.session_state.get("quotation_attention_title"),
     }
 
     with preview_col:
@@ -7696,7 +7775,6 @@ def _render_quotation_section(conn):
             metadata["Customer district"] = customer_district
             metadata["Customer contact"] = customer_contact
             metadata["Attention name"] = attention_name
-            metadata["Attention title"] = attention_title
             metadata["Subject"] = subject_line
             metadata["Salutation"] = salutation
             metadata["Introduction"] = intro_text
@@ -7768,7 +7846,6 @@ def _render_quotation_section(conn):
                 "customer_district": customer_district,
                 "customer_contact": customer_contact,
                 "attention_name": attention_name,
-                "attention_title": attention_title,
                 "subject": subject_line,
                 "salutation": salutation,
                 "introduction": intro_text,
@@ -11856,19 +11933,86 @@ def reports_page(conn):
     )
 
     st.markdown("##### Import report data")
+    import_payload = st.session_state.get("report_grid_import_payload")
     import_file = st.file_uploader(
         "Upload report grid (Excel or CSV)",
         type=["xlsx", "xls", "csv"],
         help="Populate the grid below by importing a spreadsheet with columns matching the report table.",
         key="report_grid_importer",
     )
+    uploaded_df: Optional[pd.DataFrame] = None
     if import_file is not None:
-        imported_rows = _import_report_grid_from_file(import_file)
-        if imported_rows:
-            st.session_state["report_grid_import_rows"] = imported_rows
-            st.success(
-                f"Loaded {len(imported_rows)} row(s) from the uploaded file. They are ready in the grid below."
-            )
+        import_payload = {
+            "name": import_file.name,
+            "data": import_file.getvalue(),
+        }
+        st.session_state["report_grid_import_payload"] = import_payload
+        st.session_state.pop("report_grid_mapping_choices", None)
+
+    if import_payload:
+        uploaded_df = _load_report_grid_dataframe(
+            import_payload.get("data", b""), import_payload.get("name", "")
+        )
+        if uploaded_df is not None:
+            suggestions = _suggest_report_column_mapping(uploaded_df.columns)
+            if suggestions and import_file is not None:
+                auto_mapping = {source: target for target, source in suggestions.items()}
+                imported_rows = _import_report_grid_from_dataframe(
+                    uploaded_df, auto_mapping
+                )
+                if imported_rows:
+                    st.session_state["report_grid_import_rows"] = imported_rows
+                    st.session_state["report_grid_mapping_choices"] = suggestions
+                    st.success(
+                        f"Loaded {len(imported_rows)} row(s) from the uploaded file. They are ready in the grid below."
+                    )
+                else:
+                    st.warning(
+                        "We could not read any matching columns from that file. Adjust the mapping below to continue.",
+                        icon="⚠️",
+                    )
+            mapping_seed = st.session_state.get("report_grid_mapping_choices", {})
+            map_options = ["(Do not import)"] + list(uploaded_df.columns)
+            with st.form("report_grid_import_mapper"):
+                st.caption(
+                    "Align columns from the uploaded file to the report grid fields. Skipped columns will be ignored."
+                )
+                selected_mapping: dict[str, str] = {}
+                for key, config in REPORT_GRID_FIELDS.items():
+                    default_choice = mapping_seed.get(key) or suggestions.get(key)
+                    if default_choice not in map_options:
+                        default_choice = "(Do not import)"
+                    choice = st.selectbox(
+                        config["label"],
+                        options=map_options,
+                        index=map_options.index(default_choice)
+                        if default_choice in map_options
+                        else 0,
+                        key=f"report_map_{key}",
+                        help=f"Select the column that represents '{config['label']}'.",
+                    )
+                    if choice != "(Do not import)":
+                        selected_mapping[choice] = key
+                load_clicked = st.form_submit_button("Load mapped rows into grid")
+
+            if load_clicked:
+                st.session_state["report_grid_mapping_choices"] = {
+                    key: st.session_state.get(f"report_map_{key}")
+                    for key in REPORT_GRID_FIELDS.keys()
+                }
+                imported_rows = _import_report_grid_from_dataframe(
+                    uploaded_df, selected_mapping
+                )
+                if imported_rows:
+                    st.session_state["report_grid_import_rows"] = imported_rows
+                    st.success(
+                        f"Loaded {len(imported_rows)} row(s) using the selected mapping."
+                    )
+                else:
+                    st.warning(
+                        "No rows were imported with that mapping. Please review the selections and try again.",
+                        icon="⚠️",
+                    )
         else:
             st.warning(
                 "We could not read any matching columns from that file. Ensure the headers match the report grid labels.",
@@ -12497,7 +12641,7 @@ def main():
             "Navigate", nav_pages, index=current_index, key="nav_page"
         )
         page = page_choice
-        if create_quote or st.session_state.page == "Create Quotation":
+        if create_quote:
             page = "Create Quotation"
         st.session_state.page = page
 
