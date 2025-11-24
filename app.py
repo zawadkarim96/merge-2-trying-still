@@ -7718,7 +7718,7 @@ def _render_quotation_section(conn):
             )
 
             st.markdown("#### Product details")
-            items_toolbar = st.columns(4)
+            items_toolbar = st.columns(3)
             with items_toolbar[0]:
                 add_item = st.button(
                     "Add item", key="quotation_add_item", use_container_width=True
@@ -7731,19 +7731,12 @@ def _render_quotation_section(conn):
                 reset_items = st.button(
                     "Reset defaults", key="quotation_reset_items", use_container_width=True
                 )
-            with items_toolbar[3]:
-                apply_items_to_preview = st.button(
-                    "Update preview", key="quotation_update_preview", use_container_width=True
-                )
             if add_item:
                 st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
-                st.session_state["quotation_preview_items_dirty"] = True
             if clear_items:
                 st.session_state["quotation_item_rows"] = []
-                st.session_state["quotation_preview_items_dirty"] = True
             if reset_items:
                 st.session_state["quotation_item_rows"] = _default_quotation_items()
-                st.session_state["quotation_preview_items_dirty"] = True
 
             items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
             if not items_df_seed.empty:
@@ -7824,24 +7817,31 @@ def _render_quotation_section(conn):
                     ),
                 },
             )
-            edited_items = items_editor.copy()
+            edited_items: pd.DataFrame
+            if isinstance(items_editor, pd.DataFrame):
+                edited_items = items_editor.copy()
+                edited_items = edited_items.where(pd.notna(edited_items), None)
+            else:
+                edited_items = pd.DataFrame()
+
             edited_items["line_total"] = edited_items.apply(_compute_line_total, axis=1)
             new_rows = edited_items.to_dict("records")
-            st.session_state["quotation_item_rows"] = new_rows
-            st.session_state["quotation_complete_item_rows"] = [
-                row
-                for row in st.session_state["quotation_item_rows"]
-                if _quotation_row_complete(row)
-            ]
             if new_rows != previous_rows:
-                st.session_state["quotation_preview_items_dirty"] = True
-
-            if apply_items_to_preview:
+                st.session_state["quotation_item_rows"] = new_rows
+                st.session_state["quotation_complete_item_rows"] = [
+                    row
+                    for row in st.session_state["quotation_item_rows"]
+                    if _quotation_row_complete(row)
+                ]
                 st.session_state["quotation_preview_item_rows"] = [
                     dict(row) for row in st.session_state["quotation_item_rows"]
                 ]
                 st.session_state["quotation_preview_items_dirty"] = False
-                st.toast("Preview updated", icon="✅")
+            else:
+                st.session_state.setdefault(
+                    "quotation_complete_item_rows",
+                    [row for row in new_rows if _quotation_row_complete(row)],
+                )
 
             closing_text = st.text_area(
                 "Closing / thanks",
@@ -7947,12 +7947,7 @@ def _render_quotation_section(conn):
 
     with preview_col:
         st.markdown("#### Live quotation preview")
-        if st.session_state.get("quotation_preview_items_dirty"):
-            st.info(
-                "Product details have changed; click **Update preview** in the table toolbar to refresh this view.",
-                icon="🕒",
-            )
-        st.caption("Compose on the left and review the letterhead beside the form.")
+        st.caption("Compose on the left and review the letterhead beside the form. Preview updates automatically.")
         _render_letterhead_preview(
             preview_metadata,
             preview_grand_total,
@@ -12875,39 +12870,37 @@ def main():
                 "Maintenance and Service",
             ]
 
-        st.session_state.setdefault("nav_selection", pages[0])
+        if "nav_selection" not in st.session_state:
+            st.session_state["nav_selection"] = pages[0]
         if st.session_state.get("nav_selection") not in pages:
             st.session_state["nav_selection"] = pages[0]
 
-        if st.session_state.get("nav_page") not in pages + ["Create Quotation"]:
+        if "nav_page" not in st.session_state:
             st.session_state["nav_page"] = st.session_state.get("page", pages[0])
-
-        nav_seed = (
-            st.session_state.get("nav_page")
-            if st.session_state.get("nav_page") in pages
-            else pages[0]
-        )
-        st.session_state["nav_selection"] = nav_seed
-
-        previous_selection = st.session_state.get("nav_selection", pages[0])
-        current_index = pages.index(previous_selection)
-        page_choice = st.radio(
-            "Navigate", pages, index=current_index, key="nav_selection"
-        )
-        selection_changed = page_choice != previous_selection
-
-        if create_quote:
-            st.session_state["nav_page"] = "Create Quotation"
-        elif st.session_state.get("nav_page") == "Create Quotation":
-            if selection_changed:
-                st.session_state["nav_page"] = page_choice
-        else:
-            st.session_state["nav_page"] = page_choice
-
         if st.session_state.get("nav_page") not in pages + ["Create Quotation"]:
             st.session_state["nav_page"] = pages[0]
 
-        page = st.session_state["nav_page"]
+        previous_choice = st.session_state.get(
+            "_nav_previous_choice", st.session_state.get("nav_selection", pages[0])
+        )
+        nav_seed = (
+            st.session_state.get("nav_page")
+            if st.session_state.get("nav_page") in pages
+            else st.session_state.get("nav_selection", pages[0])
+        )
+        current_index = pages.index(nav_seed)
+        page_choice = st.radio(
+            "Navigate", pages, index=current_index, key="nav_selection"
+        )
+        selection_changed = page_choice != previous_choice
+        st.session_state["_nav_previous_choice"] = page_choice
+
+        if create_quote:
+            st.session_state["nav_page"] = "Create Quotation"
+        elif selection_changed or st.session_state.get("nav_page") not in pages:
+            st.session_state["nav_page"] = page_choice
+
+        page = st.session_state.get("nav_page", pages[0])
         st.session_state.page = page
 
     show_expiry_notifications(conn)
