@@ -8085,6 +8085,8 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
 
     overlay_canvas = overlay_card.container()
 
+    # Keep CSS braces double-escaped inside this f-string to avoid runtime NameError
+    # when Streamlit renders the template.
     overlay_canvas.markdown(
         f"""
         <style>
@@ -8146,11 +8148,11 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             border-color: #1e293b;
             outline: 1px solid #cbd5e1;
           }}
-          .letterhead-grid-label {
+          .letterhead-grid-label {{
             font-size: 12px;
             color: #475569;
             margin-bottom: 2px;
-          }
+          }}
           .letterhead-surface {{
             display: none;
           }}
