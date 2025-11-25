@@ -8094,17 +8094,21 @@ def _render_quotation_section(conn):
                 "Product rows will appear once you refresh the live preview after editing the table.",
                 icon="⏸️",
             )
+            st.info(
+                "Preview updates only after you sync the product table. Keep editing, then refresh when ready.",
+                icon="📝",
+            )
         else:
             st.caption(
                 "Compose on the left and review the letterhead beside the form. Refresh the product table to update this view."
             )
-        _render_letterhead_preview(
-            preview_metadata,
-            preview_grand_total,
-            template_choice=st.session_state.get("quotation_letter_template"),
-            items=preview_items,
-            totals=preview_totals,
-        )
+            _render_letterhead_preview(
+                preview_metadata,
+                preview_grand_total,
+                template_choice=st.session_state.get("quotation_letter_template"),
+                items=preview_items,
+                totals=preview_totals,
+            )
 
         if submit:
             item_records = (
