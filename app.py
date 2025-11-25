@@ -7304,6 +7304,19 @@ def _render_letterhead_preview(
     items: Optional[list[dict[str, object]]] = None,
     totals: Optional[dict[str, float]] = None,
 ) -> None:
+    metadata = metadata or {}
+
+    resolved_render_id = st.session_state.get("_render_id", 0)
+    overlay_id = f"letterhead-preview-{resolved_render_id}"
+
+    template_path = _resolve_letterhead_path(template_choice)
+    if not template_path:
+        st.warning(
+            "Letterhead template missing. Upload ps_letterhead.png to see the preview.",
+            icon="⚠️",
+        )
+        return
+
     data_uri = _load_letterhead_data_uri(template_choice)
     if not data_uri:
         return
@@ -7345,37 +7358,54 @@ def _render_letterhead_preview(
     )
 
     subject = html.escape(
-        metadata.get("Subject")
-        or metadata.get("Subject / scope", "Quotation")
+        str(
+            metadata.get("Subject")
+            or metadata.get("Subject / scope")
+            or "Quotation"
+        )
     )
     customer = html.escape(
-        metadata.get("Customer company")
-        or metadata.get("Customer / organisation", "")
+        str(
+            metadata.get("Customer company")
+            or metadata.get("Customer / organisation")
+            or ""
+        )
     )
-    contact = html.escape(
+    raw_contact = (
         metadata.get("Customer contact name")
-        or metadata.get("Customer contact", "")
+        or metadata.get("Customer contact")
+        or ""
     )
+    contact = html.escape(str(raw_contact))
     reference = html.escape(
-        metadata.get("Reference number")
-        or metadata.get("Quotation reference", "")
+        str(
+            metadata.get("Reference number")
+            or metadata.get("Quotation reference")
+            or ""
+        )
     )
-    address = html.escape(metadata.get("Customer address", ""))
-    district = html.escape(metadata.get("Customer district", ""))
-    salutation = html.escape(metadata.get("Salutation", "Dear Sir,"))
+    address = html.escape(str(metadata.get("Customer address") or ""))
+    district = html.escape(str(metadata.get("Customer district") or ""))
+    salutation = html.escape(str(metadata.get("Salutation") or "Dear Sir,"))
     intro = html.escape(
-        metadata.get("Introduction")
-        or metadata.get("Introduction / cover paragraph", "We thank you for your inquiry and are pleased to submit our best proposal as desired.")
+        str(
+            metadata.get("Introduction")
+            or metadata.get("Introduction / cover paragraph")
+            or "We thank you for your inquiry and are pleased to submit our best proposal as desired."
+        )
     )
     closing = html.escape(
-        metadata.get("Closing / thanks")
-        or metadata.get("Closing", "With Thanks & Kind Regards")
+        str(
+            metadata.get("Closing / thanks")
+            or metadata.get("Closing")
+            or "With Thanks & Kind Regards"
+        )
     )
-    date_value = html.escape(metadata.get("Date", ""))
-    prepared_by = html.escape(metadata.get("Salesperson name", ""))
-    prepared_title = html.escape(metadata.get("Salesperson title", ""))
-    prepared_contact = html.escape(metadata.get("Salesperson contact", ""))
-    attention_name = html.escape(metadata.get("Attention name", ""))
+    date_value = html.escape(str(metadata.get("Date") or ""))
+    prepared_by = html.escape(str(metadata.get("Salesperson name") or ""))
+    prepared_title = html.escape(str(metadata.get("Salesperson title") or ""))
+    prepared_contact = html.escape(str(metadata.get("Salesperson contact") or ""))
+    attention_name = html.escape(str(metadata.get("Attention name") or ""))
 
     line_items = items[:8]
     discount_value = _coerce_float(totals.get("discount_total") if totals else None, 0.0)
@@ -7421,12 +7451,29 @@ def _render_letterhead_preview(
 
     address_block = "<br/>".join(filter(None, [customer, contact, address, district]))
 
+    letterhead_style = (
+        f"position: relative; width: 940px; min-height: 1100px; border: 1px solid #e5e7eb; border-radius: 12px;"
+        f" overflow: hidden; box-shadow: 0 18px 48px rgba(15, 23, 42, 0.14); background: #f8fafc;"
+        f" background-image: url('{template_path.as_posix()}'), url('{data_uri}');"
+        " background-size: contain; background-repeat: no-repeat; background-position: top center;"
+    )
+
     preview_html = dedent(
         f"""
+        <style>
+          .letterhead-wrapper[data-overlay-id='{overlay_id}'] {{
+            {letterhead_style}
+          }}
+          .letterhead-wrapper[data-overlay-id='{overlay_id}'] .letterhead-content {{
+            position: relative;
+            padding: 130px 72px 90px 72px;
+            color: #0f172a;
+            font-family: 'Arial', sans-serif;
+          }}
+        </style>
         <div style="margin-top: 1rem; display: flex; justify-content: center;">
-          <div style="position: relative; width: 940px; min-height: 1100px; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; box-shadow: 0 18px 48px rgba(15, 23, 42, 0.14); background: #f8fafc;">
-            <div style="position: absolute; inset: 0; background: url('{data_uri}') no-repeat center top / contain; opacity: 0.95;"></div>
-            <div style="position: relative; padding: 130px 72px 90px 72px; color: #0f172a; font-family: 'Arial', sans-serif;">
+          <div class="letterhead-wrapper" data-overlay-id="{overlay_id}">
+            <div class="letterhead-content">
               <div style="text-align: right; font-size: 13px; line-height: 1.5;">
                 <div><strong>Date:</strong> {date_value or '—'}</div>
                 <div><strong>Ref:</strong> {reference or '—'}</div>
