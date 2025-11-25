@@ -4632,6 +4632,8 @@ def dashboard(conn):
 
 
 def show_expiry_notifications(conn):
+    is_admin = current_user_is_admin()
+
     if not st.session_state.get("just_logged_in"):
         return
 
