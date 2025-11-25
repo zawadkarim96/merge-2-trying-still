@@ -8084,6 +8084,9 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             )
 
     overlay_canvas = overlay_card.container()
+    letterhead_block_selector = (
+        f"div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"])"
+    )
 
     header_positions = {
         "quotation_date": "top: 72px; right: 92px; width: 210px;",
@@ -8104,14 +8107,14 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
 
     row_css_rules = "\n".join(
         [
-            f".letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-row-anchor[data-row=\"{idx}\"]) {{ position: absolute; top: {table_top + idx * row_height}px; left: {table_left}px; width: {table_width}px; }}"
+            f"{letterhead_block_selector} div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-row-anchor[data-row=\"{idx}\"]) {{ position: absolute; top: {table_top + idx * row_height}px; left: {table_left}px; width: {table_width}px; }}"
             for idx, _ in enumerate(items_rows)
         ]
     )
 
     field_css_rules = "\n".join(
         [
-            f".letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-field-anchor[data-field=\"{key}\"]) {{ position: absolute; {style} }}"
+            f"{letterhead_block_selector} div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-field-anchor[data-field=\"{key}\"]) {{ position: absolute; {style} }}"
             for key, style in header_positions.items()
         ]
     )
@@ -8119,7 +8122,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
     overlay_canvas.markdown(
         f"""
         <style>
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] {{
+          {letterhead_block_selector} {{
             position: relative;
             border: 1px solid #e2e8f0;
             border-radius: 16px;
@@ -8128,35 +8131,26 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             min-height: 1180px;
             overflow: hidden;
             aspect-ratio: 210 / 297;
-            background-color: #f8fafc;
-            background-image: none;
             margin: 0 auto 22px auto;
-          }}
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"]::before {{
-            content: "";
-            position: absolute;
-            inset: 24px 24px 24px 24px;
             {overlay_bg}
             background-size: contain;
             background-repeat: no-repeat;
             background-position: center top;
-            border-radius: 8px;
-            z-index: 0;
           }}
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] > div[data-testid=\"stVerticalBlock\"] {{
+          {letterhead_block_selector} > div[data-testid=\"stVerticalBlock\"] {{
             margin: 0 !important;
             padding: 0 !important;
           }}
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .letterhead-field-anchor,
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .letterhead-row-anchor {{
+          {letterhead_block_selector} .letterhead-field-anchor,
+          {letterhead_block_selector} .letterhead-row-anchor {{
             position: absolute;
             inset: auto;
             z-index: 1;
           }}
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stTextInput > div > input,
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stDateInput input,
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stNumberInput input,
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stTextArea textarea {{
+          {letterhead_block_selector} .stTextInput > div > input,
+          {letterhead_block_selector} .stDateInput input,
+          {letterhead_block_selector} .stNumberInput input,
+          {letterhead_block_selector} .stTextArea textarea {{
             background: rgba(255, 255, 255, 0.85);
             border: 0;
             border-bottom: 1px dashed #94a3b8;
@@ -8166,10 +8160,10 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             font-size: 14px;
             color: #0f172a;
           }}
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stTextInput > div > input:focus,
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stDateInput input:focus,
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stNumberInput input:focus,
-          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stTextArea textarea:focus {{
+          {letterhead_block_selector} .stTextInput > div > input:focus,
+          {letterhead_block_selector} .stDateInput input:focus,
+          {letterhead_block_selector} .stNumberInput input:focus,
+          {letterhead_block_selector} .stTextArea textarea:focus {{
             border-color: #1e293b;
             outline: 1px solid #cbd5e1;
           }}
@@ -8181,14 +8175,17 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
           {field_css_rules}
           {row_css_rules}
         </style>
-        <div class="letterhead-wrapper" data-overlay-id="{overlay_id}">
         """,
         unsafe_allow_html=True,
     )
 
     with overlay_canvas:
+        st.markdown(
+            f"<div class='letterhead-wrapper' data-overlay-id='{overlay_id}'></div>",
+            unsafe_allow_html=True,
+        )
         st.caption("Edit every printed field directly on the letterhead overlay.")
-_overlay_slot(
+        _overlay_slot(
             "Date",
             key="quotation_date",
             placeholder="Date",
