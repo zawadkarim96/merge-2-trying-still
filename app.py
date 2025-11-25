@@ -14,7 +14,7 @@ import zipfile
 from calendar import monthrange
 from datetime import datetime, timedelta, date
 from pathlib import Path
-from typing import Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from dotenv import load_dotenv
 from textwrap import dedent
@@ -1246,6 +1246,54 @@ def _build_staff_alerts(conn, *, user_id: Optional[int]) -> list[dict[str, objec
         )
 
     return alerts
+
+
+def _fetch_entity_activity(
+    conn,
+    entity_types: Iterable[str],
+    *,
+    user_filter: Optional[int] = None,
+    limit: int = 30,
+) -> pd.DataFrame:
+    types = [clean_text(t) for t in entity_types if clean_text(t)]
+    if not types:
+        return pd.DataFrame()
+
+    filters = [f"a.entity_type IN ({','.join('?' for _ in types)})"]
+    params: list[object] = list(types)
+    try:
+        resolved_limit = max(1, min(int(limit), 200))
+    except (TypeError, ValueError):
+        resolved_limit = 30
+
+    if user_filter is not None:
+        filters.append("a.user_id = ?")
+        params.append(int(user_filter))
+
+    params.append(resolved_limit)
+
+    where_clause = " AND ".join(filters)
+
+    return df_query(
+        conn,
+        dedent(
+            f"""
+            SELECT a.activity_id,
+                   a.entity_type,
+                   a.event_type,
+                   a.description,
+                   a.created_at,
+                   a.user_id,
+                   COALESCE(u.username, 'Team member') AS actor
+            FROM activity_log a
+            LEFT JOIN users u ON u.user_id = a.user_id
+            WHERE {where_clause}
+            ORDER BY datetime(a.created_at) DESC, a.activity_id DESC
+            LIMIT ?
+            """
+        ),
+        tuple(params),
+    )
 
 
 def log_activity(
@@ -3433,6 +3481,82 @@ def ensure_auth(role=None):
         st.warning("You do not have permission to access this page.")
         st.stop()
 
+
+def _render_admin_record_history(conn):
+    user = get_current_user()
+    if clean_text(user.get("role")) != "admin":
+        return
+
+    st.markdown("#### Team record history")
+    st.caption(
+        "Review recent submissions across reports, delivery orders, work done, and maintenance/service."
+    )
+
+    users_df = df_query(
+        conn,
+        "SELECT user_id, username FROM users ORDER BY LOWER(COALESCE(username, 'user'))",
+    )
+    member_options: list[Optional[int]] = [None]
+    member_labels: dict[Optional[int], str] = {None: "All team members"}
+    if not users_df.empty:
+        for _, row in users_df.iterrows():
+            try:
+                uid = int(row.get("user_id"))
+            except Exception:
+                continue
+            label = clean_text(row.get("username")) or f"User #{uid}"
+            member_options.append(uid)
+            member_labels[uid] = label
+
+    selected_user = st.selectbox(
+        "Filter by team member",
+        member_options,
+        format_func=lambda uid: member_labels.get(uid, "All team members"),
+        key="dashboard_record_history_user",
+    )
+
+    tabs = st.tabs(
+        ["Reports", "Delivery orders", "Work done", "Maintenance & Service"]
+    )
+
+    tab_map: list[tuple[Any, tuple[str, ...], str]] = [
+        (tabs[0], ("report",), "No reports recorded yet."),
+        (tabs[1], ("delivery_order",), "No delivery orders recorded yet."),
+        (tabs[2], ("work_done",), "No work done entries recorded yet."),
+        (
+            tabs[3],
+            ("service", "maintenance"),
+            "No maintenance or service updates recorded yet.",
+        ),
+    ]
+
+    for tab, entities, empty_message in tab_map:
+        with tab:
+            history_df = _fetch_entity_activity(
+                conn, entities, user_filter=selected_user, limit=50
+            )
+            if history_df.empty:
+                st.info(empty_message)
+                continue
+
+            history_df["When"] = history_df["created_at"].apply(
+                lambda value: format_time_ago(value)
+                or format_period_range(value, value)
+            )
+            history_df["Record type"] = history_df["entity_type"].apply(
+                lambda val: (clean_text(val) or "Record").replace("_", " ").title()
+            )
+            display_df = history_df.rename(
+                columns={"actor": "Team member", "description": "Details"}
+            )
+            st.dataframe(
+                display_df[
+                    ["Team member", "Record type", "Details", "When"]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+
 # ---------- Pages ----------
 def dashboard(conn):
     st.subheader("📊 Dashboard")
@@ -3818,6 +3942,8 @@ def dashboard(conn):
             )
 
     if is_admin:
+        _render_admin_record_history(conn)
+
         staff_quotes = df_query(
             conn,
             dedent(
@@ -7835,15 +7961,36 @@ def _render_quotation_section(conn):
                     for row in st.session_state["quotation_item_rows"]
                     if _quotation_row_complete(row)
                 ]
-                st.session_state["quotation_preview_item_rows"] = [
-                    dict(row) for row in st.session_state["quotation_item_rows"]
-                ]
-                st.session_state["quotation_preview_items_dirty"] = False
+                st.session_state["quotation_preview_items_dirty"] = True
             else:
                 st.session_state.setdefault(
                     "quotation_complete_item_rows",
                     [row for row in new_rows if _quotation_row_complete(row)],
                 )
+
+            if not st.session_state.get("quotation_preview_item_rows"):
+                st.session_state["quotation_preview_item_rows"] = [
+                    dict(row) for row in st.session_state.get("quotation_item_rows", [])
+                ]
+
+            refresh_needed = st.session_state.get(
+                "quotation_preview_items_dirty", False
+            )
+            if refresh_needed:
+                st.info(
+                    "Live preview refreshes after you sync the product table. "
+                    "Continue filling the form, then update the preview when ready.",
+                    icon="⏸️",
+                )
+            if st.button(
+                "Refresh live preview",
+                use_container_width=True,
+                key="quotation_refresh_preview",
+            ):
+                st.session_state["quotation_preview_item_rows"] = [
+                    dict(row) for row in st.session_state.get("quotation_item_rows", [])
+                ]
+                st.session_state["quotation_preview_items_dirty"] = False
 
             closing_text = st.text_area(
                 "Closing / thanks",
@@ -7919,6 +8066,11 @@ def _render_quotation_section(conn):
                 _safe_rerun()
 
     preview_source = st.session_state.get("quotation_preview_item_rows") or []
+    if not preview_source and st.session_state.get("quotation_item_rows"):
+        preview_source = [
+            dict(row) for row in st.session_state.get("quotation_item_rows", [])
+        ]
+    preview_dirty = st.session_state.get("quotation_preview_items_dirty", False)
     preview_rows = [
         row for row in preview_source if _quotation_row_complete(row)
     ] or preview_source
@@ -7949,7 +8101,15 @@ def _render_quotation_section(conn):
 
     with preview_col:
         st.markdown("#### Live quotation preview")
-        st.caption("Compose on the left and review the letterhead beside the form. Preview updates automatically.")
+        if preview_dirty:
+            st.warning(
+                "Product rows will appear once you refresh the live preview after editing the table.",
+                icon="⏸️",
+            )
+        else:
+            st.caption(
+                "Compose on the left and review the letterhead beside the form. Refresh the product table to update this view."
+            )
         _render_letterhead_preview(
             preview_metadata,
             preview_grand_total,
