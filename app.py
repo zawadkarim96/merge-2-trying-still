@@ -4,6 +4,7 @@ import html
 import io
 import json
 import math
+import time
 from reportlab.lib.utils import ImageReader
 import os
 import re
@@ -7515,6 +7516,9 @@ def _render_letterhead_preview(
         """
     )
 
+    st.markdown(preview_html, unsafe_allow_html=True)
+    return preview_html
+
 def _quotation_scope_filter() -> tuple[str, tuple[object, ...]]:
     if current_user_is_admin():
         return "", ()
@@ -7793,7 +7797,7 @@ def _update_quotation_records(conn, updates: Iterable[dict[str, object]]) -> dic
     return {"updated": updated, "locked": locked}
 
 
-def _render_quotation_section(conn, *, render_id: Optional[int] = None):
+def _render_quotation_section(conn):
     default_date = datetime.now().date()
     result_key = "quotation_result"
     feedback = st.session_state.pop("quotation_feedback", None)
@@ -7809,56 +7813,9 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             st.write(message)
 
     st.session_state.setdefault("quotation_item_rows", _default_quotation_items())
-    st.session_state.setdefault("quotation_complete_item_rows", [])
-    st.session_state.setdefault("quotation_preview_item_rows", [])
-    st.session_state.setdefault("quotation_preview_items_dirty", True)
 
     user = get_current_user()
     salesperson_seed = clean_text(user.get("username")) or ""
-    salesperson_phone = clean_text(user.get("phone")) or ""
-    salesperson_title_seed = clean_text(user.get("title")) or "Salesperson"
-    initializing_form = not st.session_state.get("quotation_form_initialized")
-    if initializing_form:
-        st.session_state["quotation_form_initialized"] = True
-        st.session_state.setdefault("quotation_prepared_by", salesperson_seed)
-        st.session_state.setdefault("quotation_salesperson_contact", salesperson_phone)
-        st.session_state.setdefault("quotation_salesperson_title", salesperson_title_seed)
-        st.session_state.setdefault("quotation_date", default_date)
-        st.session_state.setdefault("quotation_quote_type", "Retail")
-        st.session_state.setdefault("quotation_salutation", "Dear Sir,")
-        st.session_state.setdefault(
-            "quotation_introduction",
-            "We thank you for your inquiry and are pleased to submit our best proposal as per the below details.",
-        )
-        st.session_state.setdefault(
-            "quotation_closing", "With Thanks & Kind Regards"
-        )
-    can_edit_salesperson = current_user_is_admin()
-
-    def _compute_line_total(row: pd.Series) -> float:
-        qty = max(_coerce_float(row.get("quantity"), 0.0), 0.0)
-        rate_val = max(_coerce_float(row.get("rate"), 0.0), 0.0)
-        discount_pct = _clamp_percentage(_coerce_float(row.get("discount"), 0.0))
-        return max(qty * rate_val * (1 - discount_pct / 100.0), 0.0)
-
-    def _quotation_row_complete(row: Mapping[str, object]) -> bool:
-        if not isinstance(row, Mapping):
-            return False
-
-        required_text = (
-            clean_text(row.get("description")),
-            clean_text(row.get("kva")),
-            clean_text(row.get("specs")),
-        )
-        if not all(required_text):
-            return False
-
-        quantity = row.get("quantity")
-        rate_val = row.get("rate")
-        has_quantity = quantity not in (None, "")
-        has_rate = rate_val not in (None, "")
-
-        return has_quantity and has_rate
     customer_df = df_query(
         conn,
         """
@@ -7877,9 +7834,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                 cid = int(row.get("customer_id"))
             except Exception:
                 continue
-            company_label = clean_text(row.get("company_name"))
-            contact_label = clean_text(row.get("name"))
-            label_parts = [company_label or contact_label]
+            label_parts = [clean_text(row.get("name")) or clean_text(row.get("company_name"))]
             phone_val = clean_text(row.get("phone"))
             if phone_val:
                 label_parts.append(phone_val)
@@ -7894,604 +7849,419 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         "In 2 weeks": 14,
         "Custom date": None,
     }
-    bangladesh_districts = [
-        "Bagerhat",
-        "Bandarban",
-        "Barguna",
-        "Barishal",
-        "Bhola",
-        "Bogura",
-        "Brahmanbaria",
-        "Chandpur",
-        "Chapai Nawabganj",
-        "Chattogram",
-        "Chuadanga",
-        "Cox's Bazar",
-        "Cumilla",
-        "Dhaka",
-        "Dinajpur",
-        "Faridpur",
-        "Feni",
-        "Gaibandha",
-        "Gazipur",
-        "Gopalganj",
-        "Habiganj",
-        "Jamalpur",
-        "Jashore",
-        "Jhalokathi",
-        "Jhenaidah",
-        "Joypurhat",
-        "Khagrachhari",
-        "Khulna",
-        "Kishoreganj",
-        "Kurigram",
-        "Kushtia",
-        "Lakshmipur",
-        "Lalmonirhat",
-        "Madaripur",
-        "Magura",
-        "Manikganj",
-        "Meherpur",
-        "Moulvibazar",
-        "Munshiganj",
-        "Mymensingh",
-        "Naogaon",
-        "Narail",
-        "Narayanganj",
-        "Narsingdi",
-        "Natore",
-        "Netrokona",
-        "Nilphamari",
-        "Noakhali",
-        "Pabna",
-        "Panchagarh",
-        "Patuakhali",
-        "Pirojpur",
-        "Rajbari",
-        "Rajshahi",
-        "Rangamati",
-        "Rangpur",
-        "Satkhira",
-        "Shariatpur",
-        "Sherpur",
-        "Sirajganj",
-        "Sunamganj",
-        "Sylhet",
-        "Tangail",
-        "Thakurgaon",
-    ]
 
-    autofill_customer = st.session_state.get("quotation_autofill_customer")
-    st.session_state.setdefault("quotation_customer_district_select", "Select district")
-    st.session_state.setdefault("quotation_customer_district", "")
-    if autofill_customer:
-        seed = autofill_records.get(int(autofill_customer))
-        if seed:
-            if not st.session_state.get("quotation_customer_name"):
-                st.session_state["quotation_customer_name"] = (
-                    clean_text(seed.get("name"))
-                    or clean_text(seed.get("company_name"))
-                    or ""
-                )
-            if not st.session_state.get("quotation_company_name"):
-                st.session_state["quotation_company_name"] = (
-                    clean_text(seed.get("company_name"))
-                    or clean_text(seed.get("name"))
-                    or ""
-                )
-            if not st.session_state.get("quotation_customer_contact"):
-                st.session_state["quotation_customer_contact"] = (
-                    clean_text(seed.get("phone")) or ""
-                )
-            if not st.session_state.get("quotation_customer_address"):
-                st.session_state["quotation_customer_address"] = (
-                    clean_text(seed.get("delivery_address"))
-                    or clean_text(seed.get("address"))
-                    or ""
-                )
-            if not st.session_state.get("quotation_attention_name"):
-                st.session_state["quotation_attention_name"] = (
-                    clean_text(seed.get("name"))
-                    or clean_text(seed.get("company_name"))
-                    or ""
-                )
-            if not st.session_state.get("quotation_customer_district"):
-                district_seed = clean_text(seed.get("district")) or ""
-                st.session_state["quotation_customer_district"] = district_seed
-                st.session_state["quotation_customer_district_select"] = (
-                    district_seed or "Select district"
-                )
+    with st.form("quotation_form"):
+        header_cols = st.columns((1.25, 0.75))
+        with header_cols[0]:
+            st.caption("Compose, save and track quotations from a single workspace.")
+            template_choice = st.selectbox(
+                "Select quotation letter",
+                ["Default letterhead", "PS letterhead"],
+                key="quotation_letter_template",
+            )
+        with header_cols[1]:
+            st.caption("Productivity assists")
+            st.write("Smart autofill from companies")
+            selected_customer = st.selectbox(
+                "Customer details seed",
+                autofill_options,
+                format_func=lambda val: autofill_labels.get(val, "Manual entry"),
+                key="quotation_autofill_customer",
+            )
 
+        render_id = st.session_state.get("quotation_overlay_render_id")
+        if not render_id:
+            render_id = int(time.time())
+            st.session_state["quotation_overlay_render_id"] = render_id
 
-
-    preview_col = st.container()
-    submit = False
-
-    template_choice = st.session_state.setdefault(
-        "quotation_letter_template", "PS letterhead"
-    )
-    toolbar_cols = st.columns((1.2, 0.8))
-    with toolbar_cols[0]:
-        st.caption("Compose, save and track quotations directly on the letterhead.")
-        st.selectbox(
-            "Letterhead template",
-            ["PS letterhead", "Default letterhead"],
-            key="quotation_letter_template",
+        template_path = _resolve_letterhead_path(template_choice)
+        overlay_bg = (
+            f"background-image: url('file://{template_path}');"
+            if template_path
+            else "background-color: #f8fafc;"
         )
-    with toolbar_cols[1]:
-        st.caption("Smart autofill from companies")
-        selected_customer = st.selectbox(
-            "Customer details seed",
-            autofill_options,
-            format_func=lambda val: autofill_labels.get(val, "Manual entry"),
-            key="quotation_autofill_customer",
+        overlay_root = (
+            f"div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-overlay-marker-{render_id})"
         )
-
-    reference_value = st.session_state.get("quotation_reference", "")
-    quotation_date = st.session_state.get("quotation_date") or default_date
-    quote_type = st.session_state.get("quotation_quote_type", "Retail")
-    prepared_by = st.session_state.get("quotation_prepared_by") or salesperson_seed
-    salesperson_title = st.session_state.get("quotation_salesperson_title", "")
-    salesperson_contact = st.session_state.get("quotation_salesperson_contact", "")
-    customer_contact_name = st.session_state.get("quotation_customer_contact_name", "")
-    customer_company = st.session_state.get("quotation_company_name", "")
-    customer_address = st.session_state.get("quotation_customer_address", "")
-    attention_name = st.session_state.get("quotation_attention_name", "")
-    subject_line = st.session_state.get("quotation_subject", "")
-    salutation = st.session_state.get("quotation_salutation") or "Dear Sir,"
-    intro_text = (
-        st.session_state.get("quotation_introduction")
-        or "We thank you for your inquiry and are pleased to submit our best proposal as per the below details."
-    )
-    admin_notes = st.session_state.get("quotation_admin_notes", "")
-    attention_title = ""
-    default_discount = 0.0
-
-    overlay_card = st.container()
-    resolved_render_id = render_id or st.session_state.get("_render_id", 0)
-    overlay_id = f"quotation-overlay-{resolved_render_id}"
-    letterhead_path = _resolve_letterhead_path(template_choice)
-    letterhead_uri = None
-    if letterhead_path and letterhead_path.exists():
-        try:
-            letterhead_uri = encode_image_as_data_uri(letterhead_path)
-        except Exception:
-            letterhead_uri = None
-    overlay_bg = (
-        f"background-image: url('{letterhead_uri}');"
-        if letterhead_uri
-        else "background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);"
-    )
-
-    items_toolbar = st.columns(3)
-    with items_toolbar[0]:
-        add_item = st.button("Add item", key="quotation_add_item", use_container_width=True)
-    with items_toolbar[1]:
-        clear_items = st.button("Clear items", key="quotation_clear_items", use_container_width=True)
-    with items_toolbar[2]:
-        reset_items = st.button(
-            "Reset defaults", key="quotation_reset_items", use_container_width=True
-        )
-    if add_item:
-        st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
-    if clear_items:
-        st.session_state["quotation_item_rows"] = []
-    if reset_items:
-        st.session_state["quotation_item_rows"] = _default_quotation_items()
-
-    items_rows = st.session_state.get("quotation_item_rows") or []
-    if not items_rows:
-        items_rows = _default_quotation_items()
-
-    previous_rows = list(items_rows)
-    updated_rows: list[dict[str, object]] = []
-    removed_any = False
-
-    def _overlay_slot(
-        label: str,
-        *,
-        key: str,
-        placeholder: str = "",
-        height: int | None = None,
-        is_area: bool = False,
-        style: str = "",
-    ):
-        field_container = st.container()
-        field_container.markdown(
-            f"<div class='letterhead-field-anchor' data-overlay-id='{overlay_id}' data-field='{key}' style='{style}'></div>",
+        overlay = st.container()
+        overlay.markdown(
+            f"""
+            <style>
+              {overlay_root} {{
+                  position: relative;
+                  margin: 0 auto 1.5rem auto;
+                  width: 800px;
+                  aspect-ratio: 210 / 297;
+                  {overlay_bg}
+                  background-size: contain;
+                  background-repeat: no-repeat;
+                  background-position: top center;
+                  border-radius: 12px;
+                  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+                  overflow: hidden;
+                  min-height: 1100px;
+              }}
+              {overlay_root} > div {{
+                  margin: 0 !important;
+                  padding: 0 !important;
+              }}
+              {overlay_root} .field-anchor {{
+                  position: absolute;
+                  pointer-events: none;
+                  inset: auto;
+              }}
+              {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] {{
+                  position: absolute;
+              }}
+              {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stTextInput > div > input,
+              {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stDateInput input,
+              {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stNumberInput input,
+              {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
+                  background: rgba(255, 255, 255, 0.9);
+                  border: 0;
+                  border-bottom: 1px dashed #94a3b8;
+                  border-radius: 8px;
+                  box-shadow: none;
+                  padding: 6px 8px;
+                  font-size: 14px;
+                  color: #0f172a;
+              }}
+              {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
+                  min-height: 64px;
+              }}
+              {overlay_root} .date-field-{render_id},
+              {overlay_root} .date-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+                  top: 72px;
+                  left: 520px;
+                  width: 200px;
+              }}
+              {overlay_root} .ref-field-{render_id},
+              {overlay_root} .ref-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+                  top: 110px;
+                  left: 500px;
+                  width: 230px;
+              }}
+              {overlay_root} .company-field-{render_id},
+              {overlay_root} .company-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+                  top: 178px;
+                  left: 80px;
+                  width: 540px;
+              }}
+              {overlay_root} .contact-field-{render_id},
+              {overlay_root} .contact-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+                  top: 206px;
+                  left: 80px;
+                  width: 520px;
+              }}
+              {overlay_root} .attention-field-{render_id},
+              {overlay_root} .attention-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+                  top: 236px;
+                  left: 80px;
+                  width: 480px;
+              }}
+              {overlay_root} .subject-field-{render_id},
+              {overlay_root} .subject-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+                  top: 270px;
+                  left: 80px;
+                  width: 640px;
+              }}
+              {overlay_root} .address-field-{render_id},
+              {overlay_root} .address-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+                  top: 304px;
+                  left: 80px;
+                  width: 640px;
+              }}
+              {overlay_root} .address-field-{render_id} + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
+                  min-height: 100px;
+              }}
+              {overlay_root} .salutation-field-{render_id},
+              {overlay_root} .salutation-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+                  top: 420px;
+                  left: 80px;
+                  width: 320px;
+              }}
+              {overlay_root} .intro-field-{render_id},
+              {overlay_root} .intro-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+                  top: 452px;
+                  left: 80px;
+                  width: 720px;
+              }}
+              {overlay_root} .intro-field-{render_id} + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
+                  min-height: 120px;
+              }}
+              {overlay_root} .table-field-{render_id},
+              {overlay_root} .table-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+                  top: 610px;
+                  left: 70px;
+                  width: 720px;
+              }}
+              {overlay_root} .closing-field-{render_id},
+              {overlay_root} .closing-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+                  top: 940px;
+                  left: 80px;
+                  width: 360px;
+              }}
+            </style>
+            <div class="letterhead-overlay-marker-{render_id}"></div>
+            """,
             unsafe_allow_html=True,
         )
-        with field_container:
-            if is_area:
-                return st.text_area(
-                    label,
-                    value=st.session_state.get(key, ""),
-                    key=key,
-                    placeholder=placeholder,
-                    label_visibility="collapsed",
-                    height=height,
-                )
-            if label == "Date":
-                return st.date_input(
-                    label,
-                    value=st.session_state.get(key, quotation_date),
-                    key=key,
-                    label_visibility="collapsed",
-                )
-            return st.text_input(
-                label,
-                value=st.session_state.get(key, ""),
-                key=key,
-                placeholder=placeholder,
+
+        if not template_path:
+            overlay.warning(
+                "Letterhead template missing. Upload ps_letterhead.png to render the overlay background."
+            )
+
+        overlay.markdown(
+            f'<div class="field-anchor date-field-{render_id}"></div>',
+            unsafe_allow_html=True,
+        )
+        with overlay.container():
+            quotation_date = st.date_input(
+                "",
+                value=st.session_state.get("quotation_date") or default_date,
+                key="quotation_date",
                 label_visibility="collapsed",
             )
 
-    st.markdown(
-        "##### Letterhead preview",
-        help="Your quotation details overlaid on the provided letterhead.",
-    )
-
-    overlay_canvas = overlay_card.container()
-    letterhead_block_selector = (
-        f"div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"])"
-    )
-
-    header_positions = {
-        "quotation_date": "top: 72px; right: 92px; width: 210px;",
-        "quotation_reference": "top: 110px; right: 92px; width: 240px;",
-        "quotation_company_name": "top: 190px; left: 88px; width: 520px;",
-        "quotation_attention_name": "top: 226px; left: 88px; width: 420px;",
-        "quotation_subject": "top: 262px; left: 88px; width: 620px;",
-        "quotation_customer_address": "top: 300px; left: 88px; width: 640px; height: 94px;",
-        "quotation_salutation": "top: 414px; left: 88px; width: 320px;",
-        "quotation_introduction": "top: 450px; left: 88px; width: 820px; height: 120px;",
-        "quotation_closing": "top: 956px; left: 88px; width: 360px;",
-    }
-
-    table_top = 610
-    table_left = 70
-    table_width = 840
-    row_height = 58
-
-    row_css_rules = "\n".join(
-        [
-            f"{letterhead_block_selector} div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-row-anchor[data-row=\"{idx}\"]) {{ position: absolute; top: {table_top + idx * row_height}px; left: {table_left}px; width: {table_width}px; }}"
-            for idx, _ in enumerate(items_rows)
-        ]
-    )
-
-    field_css_rules = "\n".join(
-        [
-            f"{letterhead_block_selector} div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-field-anchor[data-field=\"{key}\"]) {{ position: absolute; {style} }}"
-            for key, style in header_positions.items()
-        ]
-    )
-
-    overlay_canvas.markdown(
-        f"""
-        <style>
-          {letterhead_block_selector} {{
-            position: relative;
-            border: 1px solid #e2e8f0;
-            border-radius: 16px;
-            padding: 80px 64px 120px 64px;
-            box-shadow: 0 16px 38px rgba(15, 23, 42, 0.12);
-            min-height: 1180px;
-            overflow: hidden;
-            aspect-ratio: 210 / 297;
-            margin: 0 auto 22px auto;
-            {overlay_bg}
-            background-size: contain;
-            background-repeat: no-repeat;
-            background-position: center top;
-          }}
-          {letterhead_block_selector} > div[data-testid=\"stVerticalBlock\"] {{
-            margin: 0 !important;
-            padding: 0 !important;
-          }}
-          {letterhead_block_selector} .letterhead-field-anchor,
-          {letterhead_block_selector} .letterhead-row-anchor {{
-            position: absolute;
-            inset: auto;
-            z-index: 1;
-          }}
-          {letterhead_block_selector} .stTextInput > div > input,
-          {letterhead_block_selector} .stDateInput input,
-          {letterhead_block_selector} .stNumberInput input,
-          {letterhead_block_selector} .stTextArea textarea {{
-            background: rgba(255, 255, 255, 0.85);
-            border: 0;
-            border-bottom: 1px dashed #94a3b8;
-            border-radius: 8px;
-            box-shadow: none;
-            padding: 6px 8px;
-            font-size: 14px;
-            color: #0f172a;
-          }}
-          {letterhead_block_selector} .stTextInput > div > input:focus,
-          {letterhead_block_selector} .stDateInput input:focus,
-          {letterhead_block_selector} .stNumberInput input:focus,
-          {letterhead_block_selector} .stTextArea textarea:focus {{
-            border-color: #1e293b;
-            outline: 1px solid #cbd5e1;
-          }}
-          .letterhead-grid-label {{
-            font-size: 12px;
-            color: #475569;
-            margin-bottom: 2px;
-          }}
-          {field_css_rules}
-          {row_css_rules}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    with overlay_canvas:
-        st.markdown(preview_html, unsafe_allow_html=True)
-        st.caption("Edit every printed field directly on the letterhead overlay.")
-        _overlay_slot(
-            "Date",
-            key="quotation_date",
-            placeholder="Date",
-            style=header_positions["quotation_date"],
+        overlay.markdown(
+            f'<div class="field-anchor ref-field-{render_id}"></div>',
+            unsafe_allow_html=True,
         )
-        _overlay_slot(
-            "Reference number",
-            key="quotation_reference",
-            placeholder="Reference",
-            style=header_positions["quotation_reference"],
-        )
-        _overlay_slot(
-            "To / Customer company",
-            key="quotation_company_name",
-            placeholder="Customer company",
-            style=header_positions["quotation_company_name"],
-        )
-        _overlay_slot(
-            "Attention",
-            key="quotation_attention_name",
-            placeholder="Primary contact person",
-            style=header_positions["quotation_attention_name"],
-        )
-        _overlay_slot(
-            "Subject",
-            key="quotation_subject",
-            placeholder="Subject for this quotation",
-            style=header_positions["quotation_subject"],
-        )
-        _overlay_slot(
-            "Customer address block",
-            key="quotation_customer_address",
-            placeholder="Full address shown under the 'To' section",
-            is_area=True,
-            height=90,
-            style=header_positions["quotation_customer_address"],
-        )
-        _overlay_slot(
-            "Salutation",
-            key="quotation_salutation",
-            placeholder="Dear Sir,",
-            style=header_positions["quotation_salutation"],
-        )
-        _overlay_slot(
-            "Introduction",
-            key="quotation_introduction",
-            placeholder="Opening paragraph above the price schedule",
-            is_area=True,
-            height=120,
-            style=header_positions["quotation_introduction"],
-        )
-        _overlay_slot(
-            "Closing / thanks",
-            key="quotation_closing",
-            placeholder="With Thanks & Kind Regards",
-            style=header_positions["quotation_closing"],
-        )
-
-        for idx, row in enumerate(items_rows):
-            row_container = st.container()
-            row_style = (
-                f"top: {table_top + idx * row_height}px; left: {table_left}px; width: {table_width}px;"
+        with overlay.container():
+            reference_value = st.text_input(
+                "",
+                value=st.session_state.get("quotation_reference", ""),
+                key="quotation_reference",
+                label_visibility="collapsed",
             )
-            row_container.markdown(
-                f"<div class='letterhead-row-anchor' data-overlay-id='{overlay_id}' data-row='{idx}' style='{row_style}'></div>",
-                unsafe_allow_html=True,
+
+        overlay.markdown(
+            f'<div class="field-anchor company-field-{render_id}"></div>',
+            unsafe_allow_html=True,
+        )
+        with overlay.container():
+            customer_company = st.text_input(
+                "",
+                value=st.session_state.get("quotation_company_name", ""),
+                key="quotation_company_name",
+                label_visibility="collapsed",
             )
-            with row_container:
-                row_cols = st.columns([2.8, 1.2, 0.9, 1.1, 0.9, 1.1, 0.6], gap="small")
-                with row_cols[0]:
-                    description = st.text_input(
-                        "Description",
-                        value=row.get("description", ""),
-                        key=f"quotation_item_{idx}_description",
-                        placeholder="Item description",
-                        label_visibility="collapsed",
-                    )
-                with row_cols[1]:
-                    kva = st.text_input(
-                        "Capacity",
-                        value=row.get("kva", ""),
-                        key=f"quotation_item_{idx}_kva",
-                        placeholder="kVA / Capacity",
-                        label_visibility="collapsed",
-                    )
-                with row_cols[2]:
-                    quantity = st.number_input(
+
+        overlay.markdown(
+            f'<div class="field-anchor contact-field-{render_id}"></div>',
+            unsafe_allow_html=True,
+        )
+        with overlay.container():
+            customer_contact_name = st.text_input(
+                "",
+                value=st.session_state.get("quotation_customer_contact_name", ""),
+                key="quotation_customer_contact_name",
+                label_visibility="collapsed",
+            )
+
+        overlay.markdown(
+            f'<div class="field-anchor attention-field-{render_id}"></div>',
+            unsafe_allow_html=True,
+        )
+        with overlay.container():
+            attention_name = st.text_input(
+                "",
+                value=st.session_state.get("quotation_attention_name", ""),
+                key="quotation_attention_name",
+                label_visibility="collapsed",
+            )
+
+        overlay.markdown(
+            f'<div class="field-anchor subject-field-{render_id}"></div>',
+            unsafe_allow_html=True,
+        )
+        with overlay.container():
+            subject_line = st.text_input(
+                "",
+                value=st.session_state.get("quotation_subject", ""),
+                key="quotation_subject",
+                label_visibility="collapsed",
+            )
+
+        overlay.markdown(
+            f'<div class="field-anchor address-field-{render_id}"></div>',
+            unsafe_allow_html=True,
+        )
+        with overlay.container():
+            customer_address = st.text_area(
+                "",
+                value=st.session_state.get("quotation_customer_address", ""),
+                key="quotation_customer_address",
+                label_visibility="collapsed",
+            )
+
+        overlay.markdown(
+            f'<div class="field-anchor salutation-field-{render_id}"></div>',
+            unsafe_allow_html=True,
+        )
+        with overlay.container():
+            salutation = st.text_input(
+                "",
+                value=st.session_state.get("quotation_salutation") or "Dear Sir,",
+                key="quotation_salutation",
+                label_visibility="collapsed",
+            )
+
+        overlay.markdown(
+            f'<div class="field-anchor intro-field-{render_id}"></div>',
+            unsafe_allow_html=True,
+        )
+        with overlay.container():
+            intro_text = st.text_area(
+                "",
+                value=st.session_state.get("quotation_introduction")
+                or "We thank you for your inquiry and are pleased to submit our best proposal as per the below details.",
+                key="quotation_introduction",
+                label_visibility="collapsed",
+            )
+
+        overlay.markdown(
+            f'<div class="field-anchor table-field-{render_id}"></div>',
+            unsafe_allow_html=True,
+        )
+        with overlay.container():
+            items_toolbar = st.columns(3)
+            with items_toolbar[0]:
+                add_item = st.form_submit_button("Add item", use_container_width=True)
+            with items_toolbar[1]:
+                clear_items = st.form_submit_button("Clear items", use_container_width=True)
+            with items_toolbar[2]:
+                reset_items = st.form_submit_button("Reset defaults", use_container_width=True)
+            if add_item:
+                st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
+            if clear_items:
+                st.session_state["quotation_item_rows"] = []
+            if reset_items:
+                st.session_state["quotation_item_rows"] = _default_quotation_items()
+
+            items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
+            if not items_df_seed.empty:
+                items_df_seed = items_df_seed[
+                    ["description", "hsn", "unit", "quantity", "rate", "discount"]
+                ]
+            if items_df_seed.empty:
+                items_df_seed = pd.DataFrame(_default_quotation_items())
+
+            items_editor = st.data_editor(
+                items_df_seed,
+                num_rows="dynamic",
+                hide_index=True,
+                key="quotation_items_table",
+                use_container_width=True,
+                column_config={
+                    "description": st.column_config.TextColumn(
+                        "Tracked products",
+                        help="Describe the item or service",
+                    ),
+                    "hsn": st.column_config.TextColumn(
+                        "HSN/SAC", help="HSN/SAC code, if applicable"
+                    ),
+                    "unit": st.column_config.TextColumn("Unit"),
+                    "quantity": st.column_config.NumberColumn(
                         "Quantity",
                         min_value=0.0,
                         step=1.0,
                         format="%.2f",
-                        value=_coerce_float(row.get("quantity"), 0.0),
-                        key=f"quotation_item_{idx}_quantity",
-                        label_visibility="collapsed",
-                    )
-                with row_cols[3]:
-                    rate = st.number_input(
+                    ),
+                    "rate": st.column_config.NumberColumn(
                         "Rate",
                         min_value=0.0,
                         step=100.0,
                         format="%.2f",
-                        value=_coerce_float(row.get("rate"), 0.0),
-                        key=f"quotation_item_{idx}_rate",
-                        label_visibility="collapsed",
-                    )
-                with row_cols[4]:
-                    discount = st.number_input(
+                    ),
+                    "discount": st.column_config.NumberColumn(
                         "Discount (%)",
                         help="Discount percentage for this line item",
                         min_value=0.0,
                         max_value=100.0,
                         step=0.5,
                         format="%.2f",
-                        value=_coerce_float(row.get("discount"), 0.0),
-                        key=f"quotation_item_{idx}_discount",
-                        label_visibility="collapsed",
-                    )
-                with row_cols[5]:
-                    line_total = _compute_line_total(
-                        {
-                            "quantity": quantity,
-                            "rate": rate,
-                            "discount": discount,
-                        }
-                    )
-                    st.text_input(
-                        "Line total",
-                        value=f"{line_total:,.2f}",
-                        key=f"quotation_item_{idx}_line_total_display",
-                        disabled=True,
-                        label_visibility="collapsed",
-                    )
-                with row_cols[6]:
-                    remove_clicked = st.button(
-                        "✕",
-                        key=f"quotation_remove_item_{idx}",
-                        use_container_width=True,
-                        help="Remove this row",
-                    )
-
-            if remove_clicked:
-                removed_any = True
-                continue
-
-            updated_rows.append(
-                {
-                    "description": description,
-                    "kva": kva,
-                    "specs": row.get("specs", ""),
-                    "note": row.get("note", ""),
-                    "quantity": quantity,
-                    "rate": rate,
-                    "discount": discount,
-                }
+                    ),
+                },
             )
 
-        overlay_canvas.markdown("</div>", unsafe_allow_html=True)
-
-    if removed_any and not updated_rows:
-        updated_rows = _default_quotation_items()
-
-    st.session_state["quotation_item_rows"] = updated_rows
-    st.session_state["quotation_complete_item_rows"] = [
-        row for row in updated_rows if _quotation_row_complete(row)
-    ]
-
-    if updated_rows != previous_rows:
-        st.session_state["quotation_preview_items_dirty"] = False
-
-    quote_type = st.selectbox(
-        "Quote type",
-        ["Retail", "Wholesale"],
-        key="quotation_quote_type",
-    )
-    district_state_key = "quotation_customer_district"
-    district_widget_key = "quotation_customer_district_select"
-    stored_district = st.session_state.get(district_state_key, "")
-    district_default = (
-        st.session_state.get(district_widget_key) or stored_district or "Select district"
-    )
-    district_options = ["Select district"] + sorted(bangladesh_districts)
-    district_index = (
-        district_options.index(district_default) if district_default in district_options else 0
-    )
-    customer_district_selection = st.selectbox(
-        "Customer district",
-        district_options,
-        index=district_index,
-        key=district_widget_key,
-        help="Pick a Bangladesh district to keep reporting consistent.",
-    )
-    customer_district = (
-        "" if customer_district_selection == "Select district" else customer_district_selection
-    )
-    st.session_state[district_state_key] = customer_district
-
-    sales_cols = st.columns((1, 1))
-    with sales_cols[0]:
-        prepared_by = st.text_input(
-            "Salesperson name",
-            value=prepared_by,
-            key="quotation_prepared_by",
-            disabled=not can_edit_salesperson,
-            help=None
-            if can_edit_salesperson
-            else "Salesperson details are locked to your profile.",
+        overlay.markdown(
+            f'<div class="field-anchor closing-field-{render_id}"></div>',
+            unsafe_allow_html=True,
         )
-        salesperson_contact = st.text_input(
-            "Salesperson contact",
-            value=salesperson_contact,
-            key="quotation_salesperson_contact",
-            disabled=not can_edit_salesperson,
+        with overlay.container():
+            closing_text = st.text_area(
+                "",
+                value=st.session_state.get("quotation_closing") or "With Thanks & Kind Regards",
+                key="quotation_closing",
+                label_visibility="collapsed",
+            )
+
+        settings_cols = st.columns(2)
+        with settings_cols[0]:
+            quote_type = st.selectbox(
+                "Quote type",
+                ["Retail", "Wholesale"],
+                key="quotation_quote_type",
+            )
+            default_discount = st.number_input(
+                "Optional discount (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(st.session_state.get("quotation_default_discount") or 0.0),
+                step=0.5,
+                key="quotation_default_discount",
+            )
+            customer_district = st.text_input(
+                "Customer district",
+                value=st.session_state.get("quotation_customer_district", ""),
+                key="quotation_customer_district",
+            )
+            customer_contact = st.text_input(
+                "Customer contact number",
+                value=st.session_state.get("quotation_customer_contact", ""),
+                key="quotation_customer_contact",
+            )
+            attention_title = st.text_input(
+                "Attention title",
+                value=st.session_state.get("quotation_attention_title", ""),
+                key="quotation_attention_title",
+            )
+        with settings_cols[1]:
+            prepared_by = st.text_input(
+                "Salesperson name",
+                value=st.session_state.get("quotation_prepared_by") or salesperson_seed,
+                key="quotation_prepared_by",
+            )
+            salesperson_title = st.text_input(
+                "Salesperson title",
+                value=st.session_state.get("quotation_salesperson_title", ""),
+                key="quotation_salesperson_title",
+            )
+            salesperson_contact = st.text_input(
+                "Salesperson contact",
+                value=st.session_state.get("quotation_salesperson_contact", ""),
+                key="quotation_salesperson_contact",
+            )
+            admin_notes = st.text_area(
+                "Quotation remarks for admin",
+                value=st.session_state.get("quotation_admin_notes", ""),
+                key="quotation_admin_notes",
+            )
+
+        st.session_state["quotation_item_rows"] = items_editor.to_dict("records")
+
+        follow_up_status = st.selectbox(
+            "Salesperson follow-up status",
+            ["Possible", "Hot", "Cold", "Closed", "No response"],
+            key="quotation_follow_up_status",
         )
-    with sales_cols[1]:
-        salesperson_title = st.text_input(
-            "Salesperson title",
-            value=salesperson_title,
-            key="quotation_salesperson_title",
-            disabled=not can_edit_salesperson,
+        follow_up_notes = st.text_area(
+            "Salesperson follow-up notes",
+            value=st.session_state.get("quotation_follow_up_notes", ""),
+            key="quotation_follow_up_notes",
         )
-        admin_notes = st.text_area(
-            "Quotation remarks for admin",
-            value=admin_notes,
-            key="quotation_admin_notes",
-        )
-
-    closing_text = (
-        st.session_state.get("quotation_closing") or "With Thanks & Kind Regards"
-    )
-
-    status_value = st.selectbox(
-        "Quotation status",
-        status_choices,
-        format_func=lambda val: val.title(),
-        key="quotation_status",
-    )
-
-    receipt_upload = None
-    if status_value == "paid":
-        receipt_upload = st.file_uploader(
-            "Payment receipt (PDF or image)",
-            type=["pdf", "png", "jpg", "jpeg", "webp"],
-            key="quotation_receipt_upload",
-            help="Attach proof of payment to lock in this quotation.",
-        )
-
-    follow_up_status = st.selectbox(
-        "Salesperson follow-up status",
-        ["Possible", "Hot", "Cold", "Closed", "No response"],
-        key="quotation_follow_up_status",
-    )
-    follow_up_notes = st.text_area(
-        "Salesperson follow-up notes",
-        value=st.session_state.get("quotation_follow_up_notes", ""),
-        key="quotation_follow_up_notes",
-    )
-
-    follow_up_choice_default = st.session_state.get("quotation_follow_up_choice") or list(follow_up_presets.keys())[0]
-    follow_up_choice = follow_up_choice_default
-    follow_up_date_value = st.session_state.get("quotation_follow_up_date") or (default_date + timedelta(days=3))
-    if status_value != "paid":
         follow_up_choice = st.radio(
             "Suggested follow-up timing",
             list(follow_up_presets.keys()),
@@ -8500,303 +8270,185 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         )
         follow_up_date_value = st.date_input(
             "Follow-up date",
-            value=follow_up_date_value,
+            value=st.session_state.get("quotation_follow_up_date") or (default_date + timedelta(days=3)),
             key="quotation_follow_up_date",
         )
-    else:
-        st.caption("Follow-up dates are hidden because this quotation is already paid.")
-        st.session_state.setdefault("quotation_follow_up_choice", follow_up_choice_default)
-        st.session_state.pop("quotation_follow_up_date", None)
 
-    action_cols = st.columns([1, 1])
-    submit = action_cols[0].button(
-        "Create quotation",
-        type="primary",
-        use_container_width=True,
-        key="quotation_submit",
-    )
-    reset = action_cols[1].button(
-        "Reset form", use_container_width=True, key="quotation_reset"
-    )
-
-    if reset:
-        _reset_quotation_form_state()
-        st.session_state["quotation_feedback"] = (
-            "info",
-            "Quotation form reset to defaults.",
-        )
-        st.toast("Quotation form reset", icon="ℹ️")
-        _safe_rerun()
-
-    preview_source = st.session_state.get("quotation_item_rows") or []
-    preview_rows = [row for row in preview_source if _quotation_row_complete(row)] or preview_source
-    preview_items, preview_totals = normalize_quotation_items(preview_rows)
-    preview_grand_total = format_money(preview_totals.get("grand_total")) or f"{_coerce_float(preview_totals.get('grand_total'), 0.0):,.2f}"
-    preview_metadata = {
-        "Reference number": st.session_state.get("quotation_reference"),
-        "Date": st.session_state.get("quotation_date", default_date).strftime(DATE_FMT)
-        if st.session_state.get("quotation_date")
-        else default_date.strftime(DATE_FMT),
-        "Customer company": st.session_state.get("quotation_company_name"),
-        "Customer contact name": st.session_state.get("quotation_customer_name"),
-        "Customer address": st.session_state.get("quotation_customer_address"),
-        "Customer contact": st.session_state.get("quotation_customer_contact"),
-        "Customer district": st.session_state.get("quotation_customer_district"),
-        "Subject": st.session_state.get("quotation_subject"),
-        "Introduction": st.session_state.get("quotation_introduction"),
-        "Closing": st.session_state.get("quotation_closing"),
-        "Salutation": st.session_state.get("quotation_salutation"),
-        "Quotation reference": st.session_state.get("quotation_reference"),
-        "Subject / scope": st.session_state.get("quotation_subject"),
-        "Customer / organisation": st.session_state.get("quotation_company_name"),
-        "Salesperson name": st.session_state.get("quotation_prepared_by"),
-        "Salesperson title": st.session_state.get("quotation_salesperson_title"),
-        "Salesperson contact": st.session_state.get("quotation_salesperson_contact"),
-        "Attention name": st.session_state.get("quotation_attention_name"),
-    }
-
-    with preview_col:
-        st.markdown("#### Live quotation preview")
-        st.caption(
-            "Compose on the left and see every change reflected on the letterhead instantly."
-        )
-        _render_letterhead_preview(
-            preview_metadata,
-            preview_grand_total,
-            template_choice=st.session_state.get("quotation_letter_template"),
-            items=preview_items,
-            totals=preview_totals,
+        status_value = st.selectbox(
+            "Quotation status",
+            status_choices,
+            format_func=lambda val: val.title(),
+            key="quotation_status",
         )
 
-        if submit:
-            item_records = (
-                st.session_state.get("quotation_complete_item_rows")
-                or st.session_state.get("quotation_item_rows", [])
+        action_cols = st.columns([1, 1])
+        reset = action_cols[1].form_submit_button("Reset form")
+        submit = action_cols[0].form_submit_button("Create quotation", type="primary")
+
+        if reset:
+            _reset_quotation_form_state()
+            st.session_state["quotation_feedback"] = (
+                "info",
+                "Quotation form reset to defaults.",
             )
-            prepared_items = [dict(item) for item in item_records]
-            for item in prepared_items:
-                if item.get("discount") in (None, ""):
-                    item["discount"] = default_discount
+            _safe_rerun()
 
-            if status_value == "paid" and not receipt_upload:
-                st.error("Upload a payment receipt before saving this quotation as paid.")
-                return
-
-            items_clean, totals_data = normalize_quotation_items(prepared_items)
-            if not items_clean:
-                st.error("Add at least one item with a description to create a quotation.")
-                return
-
-            if selected_customer is None:
-                _upsert_customer_from_manual_quotation(
-                    conn,
-                    name=customer_contact_name or customer_company,
-                    company=customer_company,
-                    phone=customer_contact,
-                    address=customer_address,
-                    district=customer_district,
-                    reference=reference_value,
-                    created_by=current_user_id(),
+    if st.session_state.get("quotation_autofill_customer"):
+        seed = autofill_records.get(int(st.session_state["quotation_autofill_customer"]))
+        if seed:
+            if not st.session_state.get("quotation_company_name"):
+                st.session_state["quotation_company_name"] = clean_text(seed.get("company_name")) or clean_text(seed.get("name")) or ""
+            if not st.session_state.get("quotation_customer_contact"):
+                st.session_state["quotation_customer_contact"] = clean_text(seed.get("phone")) or ""
+            if not st.session_state.get("quotation_customer_address"):
+                st.session_state["quotation_customer_address"] = (
+                    clean_text(seed.get("delivery_address"))
+                    or clean_text(seed.get("address"))
+                    or ""
                 )
+            if not st.session_state.get("quotation_customer_district"):
+                st.session_state["quotation_customer_district"] = clean_text(seed.get("district")) or ""
 
-            reminder_days = follow_up_presets.get(follow_up_choice) if status_value != "paid" else None
-            follow_up_date = follow_up_date_value if status_value != "paid" else None
-            follow_up_iso = None
-            follow_up_label = "Payment received - follow-up not required."
-            reminder_label = None
-            if status_value != "paid":
-                if reminder_days is not None:
-                    follow_up_date = quotation_date + timedelta(days=reminder_days)
-                follow_up_iso = to_iso_date(follow_up_date)
-                follow_up_label = format_period_range(follow_up_iso, follow_up_iso)
-                reminder_label = (
-                    f"Reminder scheduled in {reminder_days} days on {follow_up_label}."
-                    if reminder_days is not None
-                    else f"Reminder scheduled for {follow_up_label}."
+    if submit:
+        item_records = st.session_state.get("quotation_item_rows", [])
+        prepared_items = [dict(item) for item in item_records]
+        for item in prepared_items:
+            if item.get("discount") in (None, ""):
+                item["discount"] = default_discount
+
+        items_clean, totals_data = normalize_quotation_items(prepared_items)
+        if not items_clean:
+            st.error("Add at least one item with a description to create a quotation.")
+            return
+
+        reminder_days = follow_up_presets.get(follow_up_choice)
+        follow_up_date = follow_up_date_value
+        if reminder_days is not None:
+            follow_up_date = quotation_date + timedelta(days=reminder_days)
+        follow_up_iso = to_iso_date(follow_up_date)
+        follow_up_label = format_period_range(follow_up_iso, follow_up_iso)
+        reminder_label = (
+            f"Reminder scheduled in {reminder_days} days on {follow_up_label}."
+            if reminder_days is not None
+            else f"Reminder scheduled for {follow_up_label}."
+        )
+        grand_total_value = totals_data["grand_total"]
+
+        metadata = OrderedDict()
+        metadata["Reference number"] = reference_value
+        metadata["Date"] = quotation_date.strftime(DATE_FMT)
+        metadata["Customer contact name"] = customer_contact_name
+        metadata["Customer company"] = customer_company
+        metadata["Customer address"] = customer_address
+        metadata["Customer district"] = customer_district
+        metadata["Customer contact"] = customer_contact
+        metadata["Attention name"] = attention_name
+        metadata["Attention title"] = attention_title
+        metadata["Subject"] = subject_line
+        metadata["Salutation"] = salutation
+        metadata["Introduction"] = intro_text
+        metadata["Quote type"] = quote_type
+        metadata["Closing / thanks"] = closing_text
+        metadata["Salesperson name"] = prepared_by
+        metadata["Salesperson title"] = salesperson_title
+        metadata["Salesperson contact"] = salesperson_contact
+        metadata["Follow-up status"] = follow_up_status
+        metadata["Follow-up date"] = follow_up_label
+        metadata["Remarks (admin)"] = admin_notes
+        metadata["Total amount (BDT)"] = grand_total_value
+        metadata["Status"] = status_value.title()
+
+        totals_rows = [("Gross amount", totals_data["gross_total"])]
+        if totals_data["discount_total"]:
+            totals_rows.append(("Discount total", totals_data["discount_total"]))
+        totals_rows.append(("Grand total", grand_total_value))
+
+        workbook_items = [item.copy() for item in items_clean]
+        workbook_bytes = _build_quotation_workbook(
+            metadata=metadata,
+            items=workbook_items,
+            totals=totals_rows,
+        )
+
+        display_df = pd.DataFrame(workbook_items)
+
+        def _format_quantity_display(value: object) -> str:
+            amount = _coerce_float(value, 0.0)
+            if math.isclose(amount, round(amount)):
+                return f"{int(round(amount))}"
+            return f"{amount:,.2f}"
+
+        money_columns = ["Rate", "Gross amount", "Discount amount", "Line total"]
+        for col in money_columns:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(
+                    lambda value: format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
                 )
-            else:
-                reminder_label = "Payment marked as received; follow-up reminders disabled."
-            grand_total_value = totals_data["grand_total"]
+        if "Quantity" in display_df.columns:
+            display_df["Quantity"] = display_df["Quantity"].apply(_format_quantity_display)
+        percentage_columns = ["Discount (%)"]
+        for col in percentage_columns:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(lambda value: f"{_coerce_float(value, 0.0):.2f}%")
+        display_df = display_df.fillna("")
 
-            receipt_path = None
-            if status_value == "paid":
-                receipt_identifier = _sanitize_path_component(reference_value) or f"quotation_{quotation_date.strftime('%Y%m%d')}"
-                receipt_path = store_payment_receipt(
-                    receipt_upload,
-                    identifier=f"{receipt_identifier}_receipt",
-                )
+        base_filename = clean_text(reference_value) or f"quotation_{quotation_date.strftime('%Y%m%d')}"
+        safe_name = _sanitize_path_component(base_filename)
+        if not safe_name:
+            safe_name = f"quotation_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        filename = f"{safe_name}.xlsx"
 
-            metadata = OrderedDict()
-            metadata["Reference number"] = reference_value
-            metadata["Date"] = quotation_date.strftime(DATE_FMT)
-            metadata["Customer contact name"] = customer_contact_name
-            metadata["Customer company"] = customer_company
-            metadata["Customer address"] = customer_address
-            metadata["Customer district"] = customer_district
-            metadata["Customer contact"] = customer_contact
-            metadata["Attention name"] = attention_name
-            metadata["Subject"] = subject_line
-            metadata["Salutation"] = salutation
-            metadata["Introduction"] = intro_text
-            metadata["Quote type"] = quote_type
-            metadata["Closing / thanks"] = closing_text
-            metadata["Salesperson name"] = prepared_by
-            metadata["Salesperson title"] = salesperson_title
-            metadata["Salesperson contact"] = salesperson_contact
-            metadata["Follow-up status"] = follow_up_status
-            metadata["Follow-up date"] = follow_up_label
-            metadata["Remarks (admin)"] = admin_notes
-            metadata["Payment receipt"] = "Attached" if receipt_path else "Not uploaded"
-            metadata["Total amount (BDT)"] = grand_total_value
-            metadata["Status"] = status_value.title()
+        payload = {
+            "reference": reference_value,
+            "quote_date": quotation_date.isoformat(),
+            "customer_name": customer_contact_name,
+            "customer_company": customer_company,
+            "customer_address": customer_address,
+            "customer_district": customer_district,
+            "customer_contact": customer_contact,
+            "attention_name": attention_name,
+            "attention_title": attention_title,
+            "subject": subject_line,
+            "salutation": salutation,
+            "introduction": intro_text,
+            "closing": closing_text,
+            "quote_type": quote_type,
+            "total_amount": grand_total_value,
+            "discount_pct": default_discount,
+            "status": status_value,
+            "follow_up_status": follow_up_status,
+            "follow_up_notes": follow_up_notes,
+            "follow_up_date": follow_up_iso,
+            "reminder_label": reminder_label,
+            "letter_template": template_choice,
+            "salesperson_name": prepared_by,
+            "salesperson_title": salesperson_title,
+            "salesperson_contact": salesperson_contact,
+            "remarks_internal": admin_notes,
+            "created_by": current_user_id(),
+        }
+        record_id = _save_quotation_record(conn, payload)
 
-            totals_rows = [("Gross amount", totals_data["gross_total"])]
-            if totals_data["discount_total"]:
-                totals_rows.append(("Discount total", totals_data["discount_total"]))
-            totals_rows.append(("Grand total", grand_total_value))
-
-            workbook_items = [item.copy() for item in items_clean]
-            workbook_bytes = _build_quotation_workbook(
-                metadata=metadata,
-                items=workbook_items,
-                totals=totals_rows,
-            )
-            grand_total_label = format_money(grand_total_value) or f"{grand_total_value:,.2f}"
-            grand_total_words = format_amount_in_words(grand_total_value) or grand_total_label
-
-            pdf_bytes = _build_quotation_pdf(
-                metadata=metadata,
-                items=items_clean,
-                totals=totals_data,
-                grand_total_label=grand_total_label,
-                template_choice=template_choice,
-                grand_total_words=grand_total_words,
-            )
-
-            display_df = pd.DataFrame(workbook_items)
-
-            def _format_quantity_display(value: object) -> str:
-                amount = _coerce_float(value, 0.0)
-                if math.isclose(amount, round(amount)):
-                    return f"{int(round(amount))}"
-                return f"{amount:,.2f}"
-
-            money_columns = ["Rate", "Gross amount", "Discount amount", "Line total"]
-            for col in money_columns:
-                if col in display_df.columns:
-                    display_df[col] = display_df[col].apply(
-                        lambda value: format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
-                    )
-            if "Quantity" in display_df.columns:
-                display_df["Quantity"] = display_df["Quantity"].apply(_format_quantity_display)
-            percentage_columns = ["Discount (%)"]
-            for col in percentage_columns:
-                if col in display_df.columns:
-                    display_df[col] = display_df[col].apply(lambda value: f"{_coerce_float(value, 0.0):.2f}%")
-            display_df = display_df.fillna("")
-
-            base_filename = clean_text(reference_value) or f"quotation_{quotation_date.strftime('%Y%m%d')}"
-            safe_name = _sanitize_path_component(base_filename)
-            if not safe_name:
-                safe_name = f"quotation_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            filename = f"{safe_name}.xlsx"
-
-            payload = {
-                "reference": reference_value,
-                "quote_date": quotation_date.isoformat(),
-                "customer_name": customer_contact_name,
-                "customer_company": customer_company,
-                "customer_address": customer_address,
-                "customer_district": customer_district,
-                "customer_contact": customer_contact,
-                "attention_name": attention_name,
-                "subject": subject_line,
-                "salutation": salutation,
-                "introduction": intro_text,
-                "closing": closing_text,
-                "quote_type": quote_type,
-                "total_amount": grand_total_value,
-                "discount_pct": default_discount,
-                "status": status_value,
-                "follow_up_status": follow_up_status,
-                "follow_up_notes": follow_up_notes,
-                "follow_up_date": follow_up_iso,
-                "reminder_label": reminder_label,
-                "letter_template": template_choice,
-                "salesperson_name": prepared_by,
-                "salesperson_title": salesperson_title,
-                "salesperson_contact": salesperson_contact,
-                "document_path": None,
-                "remarks_internal": admin_notes,
-                "payment_receipt_path": receipt_path,
-                "created_by": current_user_id(),
-            }
-            record_id = _save_quotation_record(conn, payload)
-            document_path = None
-            if record_id:
-                document_path = _persist_quotation_pdf(
-                    record_id, pdf_bytes, reference_value
-                )
-                if document_path:
-                    try:
-                        conn.execute(
-                            "UPDATE quotations SET document_path=? WHERE quotation_id=?",
-                            (document_path, int(record_id)),
-                        )
-                        conn.commit()
-                    except sqlite3.Error:
-                        document_path = None
-                summary_label = reference_value or f"Quotation #{record_id}"
-                formatted_total = format_money(grand_total_value) or f"{_coerce_float(grand_total_value, 0.0):,.2f}"
-                log_activity(
-                    conn,
-                    event_type="quotation_created",
-                    description=f"{prepared_by or 'Sales'} logged {summary_label} ({formatted_total})",
-                    entity_type="quotation",
-                    entity_id=int(record_id),
-                )
-
-                if not current_user_is_admin():
-                    push_runtime_notification(
-                        "New quotation submitted",
-                        f"{prepared_by or 'Sales'} created {summary_label}.",
-                        severity="info",
-                    )
-
-            st.toast("Quotation created", icon="✅")
-
-            st.session_state[result_key] = {
-                "display": display_df,
-                "metadata_items": list(metadata.items()),
-                "totals_rows": totals_rows,
-                "grand_total": grand_total_value,
-                "metadata": metadata,
-                "excel_bytes": workbook_bytes,
-                "filename": filename,
-                "pdf_bytes": pdf_bytes,
-                "record_id": record_id,
-                "reminder_label": reminder_label,
-                "letter_template": template_choice,
-                "payment_receipt_path": receipt_path,
-                "document_path": document_path,
-                "items": items_clean,
-                "totals": totals_data,
-                "follow_up": {
-                    "status": follow_up_status,
-                    "notes": follow_up_notes,
-                    "date": follow_up_label,
-                },
-            }
+        st.session_state[result_key] = {
+            "display": display_df,
+            "metadata_items": list(metadata.items()),
+            "totals_rows": totals_rows,
+            "grand_total": grand_total_value,
+            "metadata": metadata,
+            "excel_bytes": workbook_bytes,
+            "filename": filename,
+            "record_id": record_id,
+            "reminder_label": reminder_label,
+            "letter_template": template_choice,
+        }
 
     result = st.session_state.get(result_key)
     if result:
-        st.success("Quotation ready. Review the details below or download the PDF and Excel copies.")
+        st.success("Quotation ready. Review the details below or download the Excel file.")
         metadata_df = pd.DataFrame(result["metadata_items"], columns=["Field", "Value"])
-        grand_total_label = format_money(result["grand_total"]) or f"{result['grand_total']:,.2f}"
-        st.markdown("##### Quotation summary")
-        st.dataframe(metadata_df, use_container_width=True, hide_index=True)
+        st.table(metadata_df)
 
-        st.dataframe(result["display"], use_container_width=True, hide_index=True)
+        st.dataframe(result["display"], use_container_width=True)
 
         totals_rows = result.get("totals_rows", [])
         if totals_rows:
@@ -8804,66 +8456,27 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             totals_df["Amount"] = totals_df["Amount"].apply(
                 lambda value: format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
             )
-            st.dataframe(totals_df, use_container_width=True, hide_index=True)
+            st.table(totals_df)
 
+        grand_total_label = format_money(result["grand_total"]) or f"{result['grand_total']:,.2f}"
         st.markdown(f"**Grand total:** {grand_total_label}")
         if result.get("reminder_label"):
             st.caption(result.get("reminder_label"))
 
-        follow_up_block = result.get("follow_up") or {}
-        if any(follow_up_block.values()):
-            st.markdown("###### Follow-up plan (internal)")
-            follow_rows = [
-                ("Status", clean_text(follow_up_block.get("status")) or "—"),
-                ("Target date", follow_up_block.get("date") or "—"),
-                ("Notes", clean_text(follow_up_block.get("notes")) or "—"),
-            ]
-            st.dataframe(
-                pd.DataFrame(follow_rows, columns=["Field", "Value"]),
-                use_container_width=True,
-                hide_index=True,
-            )
+        _render_letterhead_preview(
+            result.get("metadata", {}),
+            grand_total_label,
+            template_choice=result.get("letter_template")
+            or st.session_state.get("quotation_letter_template"),
+        )
 
-        receipt_path = result.get("payment_receipt_path")
-        if receipt_path:
-            receipt_file = BASE_DIR / receipt_path
-            if receipt_file.exists():
-                with open(receipt_file, "rb") as fh:
-                    st.download_button(
-                        "Download payment receipt",
-                        data=fh.read(),
-                        file_name=receipt_file.name,
-                        mime="application/octet-stream",
-                        key="quotation_receipt_download",
-                    )
-
-        download_data: Optional[bytes] = None
-        download_name: Optional[str] = None
-        download_mime = "application/pdf"
-        saved_doc_path = result.get("document_path")
-        if saved_doc_path:
-            saved_doc = BASE_DIR / saved_doc_path
-            if saved_doc.exists():
-                try:
-                    download_data = saved_doc.read_bytes()
-                    download_name = saved_doc.name
-                except OSError:
-                    download_data = None
-                    download_name = None
-
-        if download_data is None and result.get("pdf_bytes"):
-            download_data = result["pdf_bytes"]
-            download_name = f"{Path(result['filename']).stem}.pdf"
-
-        if download_data and download_name:
-            st.download_button(
-                "DOWNLOAD QUOTATION",
-                data=download_data,
-                file_name=download_name,
-                mime=download_mime,
-                key="quotation_download_primary",
-                type="primary",
-            )
+        st.download_button(
+            "Download quotation",
+            data=result["excel_bytes"],
+            file_name=result["filename"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="quotation_download",
+        )
 
 
 def _render_quotation_management(conn):
