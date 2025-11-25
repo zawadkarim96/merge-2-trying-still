@@ -7515,10 +7515,6 @@ def _render_letterhead_preview(
         """
     )
 
-    st.markdown("##### Letterhead preview", help="Your quotation details overlaid on the provided letterhead.")
-    st_components_html(preview_html, height=1200, scrolling=True)
-
-
 def _quotation_scope_filter() -> tuple[str, tuple[object, ...]]:
     if current_user_is_admin():
         return "", ()
@@ -8130,6 +8126,11 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                 label_visibility="collapsed",
             )
 
+    st.markdown(
+        "##### Letterhead preview",
+        help="Your quotation details overlaid on the provided letterhead.",
+    )
+
     overlay_canvas = overlay_card.container()
     letterhead_block_selector = (
         f"div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"])"
@@ -8227,10 +8228,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
     )
 
     with overlay_canvas:
-        st.markdown(
-            f"<div class='letterhead-wrapper' data-overlay-id='{overlay_id}'></div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown(preview_html, unsafe_allow_html=True)
         st.caption("Edit every printed field directly on the letterhead overlay.")
         _overlay_slot(
             "Date",
