@@ -7797,7 +7797,7 @@ def _update_quotation_records(conn, updates: Iterable[dict[str, object]]) -> dic
     return {"updated": updated, "locked": locked}
 
 
-def _render_quotation_section(conn):
+def _render_quotation_section(conn, *, render_id: Optional[int] = None):
     default_date = datetime.now().date()
     result_key = "quotation_result"
     feedback = st.session_state.pop("quotation_feedback", None)
@@ -7869,10 +7869,11 @@ def _render_quotation_section(conn):
                 key="quotation_autofill_customer",
             )
 
-        render_id = st.session_state.get("quotation_overlay_render_id")
-        if not render_id:
-            render_id = int(time.time())
-            st.session_state["quotation_overlay_render_id"] = render_id
+        resolved_render_id = render_id or st.session_state.get("quotation_overlay_render_id")
+        if not resolved_render_id:
+            resolved_render_id = int(time.time())
+        st.session_state["quotation_overlay_render_id"] = resolved_render_id
+        render_id = resolved_render_id
 
         template_path = _resolve_letterhead_path(template_choice)
         overlay_bg = (
