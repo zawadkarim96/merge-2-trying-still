@@ -7822,10 +7822,12 @@ def _render_quotation_section(conn):
                 edited_items = items_editor.copy()
                 edited_items = edited_items.where(pd.notna(edited_items), None)
             else:
-                edited_items = pd.DataFrame()
+                edited_items = pd.DataFrame(previous_rows)
 
             edited_items["line_total"] = edited_items.apply(_compute_line_total, axis=1)
             new_rows = edited_items.to_dict("records")
+            if not new_rows and previous_rows:
+                new_rows = previous_rows
             if new_rows != previous_rows:
                 st.session_state["quotation_item_rows"] = new_rows
                 st.session_state["quotation_complete_item_rows"] = [
@@ -12897,8 +12899,14 @@ def main():
 
         if create_quote:
             st.session_state["nav_page"] = "Create Quotation"
-        elif selection_changed or st.session_state.get("nav_page") not in pages:
+            st.session_state["_nav_locked_page"] = "Create Quotation"
+        elif selection_changed:
             st.session_state["nav_page"] = page_choice
+            st.session_state.pop("_nav_locked_page", None)
+
+        locked_page = st.session_state.get("_nav_locked_page")
+        if locked_page:
+            st.session_state["nav_page"] = locked_page
 
         page = st.session_state.get("nav_page", pages[0])
         st.session_state.page = page
