@@ -3597,10 +3597,17 @@ def _render_admin_kpi_panel(conn) -> None:
 
     def _parse_date(value: object) -> Optional[date]:
         try:
-            parsed = pd.to_datetime(value).date()
+            parsed = pd.to_datetime(value, errors="coerce")
         except Exception:
             return None
-        return parsed
+
+        if pd.isna(parsed):
+            return None
+
+        try:
+            return parsed.date()
+        except AttributeError:
+            return None
 
     staff_df["user_id"] = staff_df["user_id"].apply(lambda val: int(float(val)))
     staff_df = staff_df.rename(columns={"username": "Team member"})
@@ -8086,8 +8093,13 @@ def _render_quotation_section(conn):
                 },
             )
             edited_items: pd.DataFrame
-            if isinstance(items_editor, pd.DataFrame):
-                edited_items = items_editor.copy()
+            editor_value = items_editor
+
+            if not isinstance(editor_value, pd.DataFrame):
+                editor_value = st.session_state.get("quotation_items_table")
+
+            if isinstance(editor_value, pd.DataFrame):
+                edited_items = editor_value.copy()
                 edited_items = edited_items.where(pd.notna(edited_items), None)
             else:
                 edited_items = pd.DataFrame(previous_rows)
@@ -8096,19 +8108,15 @@ def _render_quotation_section(conn):
             new_rows = edited_items.to_dict("records")
             if not new_rows and previous_rows:
                 new_rows = previous_rows
+            st.session_state["quotation_item_rows"] = new_rows
+            st.session_state["quotation_complete_item_rows"] = [
+                row
+                for row in st.session_state["quotation_item_rows"]
+                if _quotation_row_complete(row)
+            ]
+
             if new_rows != previous_rows:
-                st.session_state["quotation_item_rows"] = new_rows
-                st.session_state["quotation_complete_item_rows"] = [
-                    row
-                    for row in st.session_state["quotation_item_rows"]
-                    if _quotation_row_complete(row)
-                ]
                 st.session_state["quotation_preview_items_dirty"] = True
-            else:
-                st.session_state.setdefault(
-                    "quotation_complete_item_rows",
-                    [row for row in new_rows if _quotation_row_complete(row)],
-                )
 
             refresh_needed = st.session_state.get(
                 "quotation_preview_items_dirty", False
