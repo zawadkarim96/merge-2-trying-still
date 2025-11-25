@@ -8017,6 +8017,37 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         if letterhead_uri
         else "background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);"
     )
+
+    def _overlay_slot(label: str, *, key: str, placeholder: str = "", height: int | None = None, is_area: bool = False):
+        field_container = st.container()
+        field_container.markdown(
+            f"<div class='letterhead-field' data-field='{key}'></div>", unsafe_allow_html=True
+        )
+        with field_container:
+            if is_area:
+                return st.text_area(
+                    label,
+                    value=st.session_state.get(key, ""),
+                    key=key,
+                    placeholder=placeholder,
+                    label_visibility="collapsed",
+                    height=height,
+                )
+            if label == "Date":
+                return st.date_input(
+                    label,
+                    value=st.session_state.get(key, quotation_date),
+                    key=key,
+                    label_visibility="collapsed",
+                )
+            return st.text_input(
+                label,
+                value=st.session_state.get(key, ""),
+                key=key,
+                placeholder=placeholder,
+                label_visibility="collapsed",
+            )
+
     overlay_card.markdown(
         f"""
         <style>
@@ -8039,102 +8070,138 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             inset: 0;
             backdrop-filter: blur(0.3px);
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stTextInput > label,
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stTextArea > label,
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stDateInput > label,
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stSelectbox > label {{
-            font-weight: 600;
-            color: #0f172a;
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"] {{
+            margin: 0 !important;
+            padding: 0 !important;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) input,
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) textarea {{
-            background: rgba(255, 255, 255, 0.78);
-            border-radius: 6px;
-            border: 1px solid #cbd5e1;
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .letterhead-field {{
+            display: none;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) textarea {{
-            min-height: 100px;
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field) {{
+            position: absolute;
+            z-index: 2;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stTextInput > div > input,
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stDateInput input,
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stTextArea textarea {{
+            background: rgba(255, 255, 255, 0.92);
+            border: 1px dashed #94a3b8;
+            border-radius: 4px;
+            box-shadow: none;
+            padding: 6px 10px;
+            font-size: 14px;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stTextInput > div > input:focus,
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stDateInput input:focus,
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stTextArea textarea:focus {{
+            border-color: #475569;
+            outline: 2px solid #cbd5e1;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_date"]) {{
+            top: 110px;
+            right: 120px;
+            width: 210px;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_reference"]) {{
+            top: 155px;
+            right: 120px;
+            width: 260px;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_company_name"]) {{
+            top: 230px;
+            left: 110px;
+            width: 520px;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_attention_name"]) {{
+            top: 270px;
+            left: 110px;
+            width: 420px;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_subject"]) {{
+            top: 310px;
+            left: 110px;
+            width: 620px;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_customer_address"]) {{
+            top: 350px;
+            left: 110px;
+            width: 620px;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_customer_contact_name"]) {{
+            top: 450px;
+            left: 110px;
+            width: 320px;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_customer_contact"]) {{
+            top: 480px;
+            left: 110px;
+            width: 320px;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_salutation"]) {{
+            top: 530px;
+            left: 110px;
+            width: 260px;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_introduction"]) {{
+            top: 570px;
+            left: 110px;
+            width: 820px;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_closing"]) {{
+            bottom: 190px;
+            left: 110px;
+            width: 320px;
           }}
         </style>
         <div data-overlay-id="{overlay_id}"></div>
         """,
         unsafe_allow_html=True,
     )
-    with overlay_card:
-        st.markdown("#### Live letterhead editor")
-        header_cols = st.columns((1.15, 0.85))
-        with header_cols[0]:
-            customer_company = st.text_input(
-                "To / Customer company",
-                value=customer_company,
-                key="quotation_company_name",
-                placeholder="Customer company",
-            )
-            attention_name = st.text_input(
-                "Attention",
-                value=attention_name,
-                key="quotation_attention_name",
-                placeholder="Primary contact person",
-            )
-            subject_line = st.text_input(
-                "Subject",
-                value=subject_line,
-                key="quotation_subject",
-                placeholder="Subject for this quotation",
-            )
-        with header_cols[1]:
-            quotation_date = st.date_input(
-                "Date",
-                value=quotation_date,
-                key="quotation_date",
-                help="Appears on the top-right of the letterhead",
-            )
-            reference_value = st.text_input(
-                "Reference number",
-                value=reference_value,
-                key="quotation_reference",
-                placeholder="Auto or manual reference",
-            )
-            quote_type = st.selectbox(
-                "Quote type",
-                ["Retail", "Wholesale"],
-                key="quotation_quote_type",
-            )
 
-        st.text_area(
+    with overlay_card:
+        st.markdown("#### Letterhead canvas")
+        st.caption("Click directly on the letterhead to fill each field.")
+        _overlay_slot("Date", key="quotation_date", placeholder="Date")
+        _overlay_slot("Reference number", key="quotation_reference", placeholder="Reference")
+        _overlay_slot("To / Customer company", key="quotation_company_name", placeholder="Customer company")
+        _overlay_slot("Attention", key="quotation_attention_name", placeholder="Primary contact person")
+        _overlay_slot("Subject", key="quotation_subject", placeholder="Subject for this quotation")
+        _overlay_slot(
             "Customer address block",
-            value=customer_address,
             key="quotation_customer_address",
             placeholder="Full address shown under the 'To' section",
+            is_area=True,
+            height=90,
+        )
+        _overlay_slot(
+            "Customer contact name",
+            key="quotation_customer_contact_name",
+            placeholder="Customer contact person",
+        )
+        _overlay_slot(
+            "Customer contact number",
+            key="quotation_customer_contact",
+            placeholder="Phone number",
+        )
+        _overlay_slot("Salutation", key="quotation_salutation", placeholder="Dear Sir,")
+        _overlay_slot(
+            "Introduction",
+            key="quotation_introduction",
+            placeholder="Opening paragraph above the price schedule",
+            is_area=True,
+            height=120,
+        )
+        _overlay_slot(
+            "Closing / thanks",
+            key="quotation_closing",
+            placeholder="With Thanks & Kind Regards",
         )
 
-        intro_cols = st.columns((1, 1))
-        with intro_cols[0]:
-            customer_contact_name = st.text_input(
-                "Customer contact name",
-                value=customer_contact_name,
-                key="quotation_customer_contact_name",
-                placeholder="Customer contact person",
-            )
-            customer_contact = st.text_input(
-                "Customer contact number",
-                value=st.session_state.get("quotation_customer_contact", ""),
-                key="quotation_customer_contact",
-                placeholder="Phone number",
-            )
-        with intro_cols[1]:
-            salutation = st.text_input(
-                "Salutation",
-                value=salutation,
-                key="quotation_salutation",
-            )
-            intro_text = st.text_area(
-                "Introduction",
-                value=intro_text,
-                key="quotation_introduction",
-                placeholder="Opening paragraph above the price schedule",
-            )
-
+    quote_type = st.selectbox(
+        "Quote type",
+        ["Retail", "Wholesale"],
+        key="quotation_quote_type",
+    )
     district_state_key = "quotation_customer_district"
     district_widget_key = "quotation_customer_district_select"
     stored_district = st.session_state.get(district_state_key, "")
