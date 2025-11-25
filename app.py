@@ -7004,7 +7004,9 @@ def _regenerate_quotation_pdf_from_workbook(file_path: Path) -> Optional[bytes]:
 def _resolve_letterhead_path(template_choice: Optional[str] = None) -> Optional[Path]:
     template_choice = template_choice or "PS letterhead"
     base_dir = Path(__file__).resolve().parent
+    sandbox_letterhead = Path("/mnt/data/eed2a8fe-ec62-4729-9ed4-aedb65953acf.png")
     default_candidates = [
+        sandbox_letterhead,
         base_dir / "PS-SALES-main" / "ps_letterhead.png",
         base_dir / "ps_letterhead.png",
         base_dir / "letterhead.png",
@@ -7013,9 +7015,9 @@ def _resolve_letterhead_path(template_choice: Optional[str] = None) -> Optional[
 
     preferred: list[Path] = []
     if template_choice == "PS letterhead":
-        preferred = [base_dir / "PS-SALES-main" / "ps_letterhead.png", base_dir / "ps_letterhead.png"]
+        preferred = [sandbox_letterhead, base_dir / "PS-SALES-main" / "ps_letterhead.png", base_dir / "ps_letterhead.png"]
     elif template_choice == "Default letterhead":
-        preferred = [base_dir / "letterhead.png", base_dir / "letterhead"]
+        preferred = [sandbox_letterhead, base_dir / "letterhead.png", base_dir / "letterhead"]
 
     seen: set[Path] = set()
     candidates: list[Path] = []
@@ -8051,109 +8053,120 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
     overlay_card.markdown(
         f"""
         <style>
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) {{
             position: relative;
-            {overlay_bg}
-            background-size: contain;
-            background-repeat: no-repeat;
-            background-position: center top;
             border: 1px solid #e2e8f0;
             border-radius: 16px;
             padding: 120px 86px 150px 86px;
             box-shadow: 0 16px 38px rgba(15, 23, 42, 0.12);
             min-height: 1120px;
             overflow: hidden;
+            aspect-ratio: 210 / 297;
+            background: #f8fafc;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"])::before {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"])::before {{
             content: "";
             position: absolute;
             inset: 0;
-            backdrop-filter: blur(0.3px);
+            {overlay_bg}
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: center top;
+            z-index: 0;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"] {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"])::after {{
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(180deg, rgba(248, 250, 252, 0.35) 0%, rgba(226, 232, 240, 0.2) 100%);
+            z-index: 1;
+          }}
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"] {{
             margin: 0 !important;
             padding: 0 !important;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .letterhead-field {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .letterhead-field {{
             display: none;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field) {{
             position: absolute;
-            z-index: 2;
+            z-index: 3;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stTextInput > div > input,
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stDateInput input,
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stTextArea textarea {{
-            background: rgba(255, 255, 255, 0.92);
-            border: 1px dashed #94a3b8;
-            border-radius: 4px;
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextInput > div > input,
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .stDateInput input,
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextArea textarea {{
+            background: rgba(255, 255, 255, 0.35);
+            border: 0;
+            border-bottom: 1px dashed #94a3b8;
+            border-radius: 0;
             box-shadow: none;
-            padding: 6px 10px;
+            padding: 6px 8px;
             font-size: 14px;
+            color: #0f172a;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stTextInput > div > input:focus,
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stDateInput input:focus,
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) .stTextArea textarea:focus {{
-            border-color: #475569;
-            outline: 2px solid #cbd5e1;
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextInput > div > input:focus,
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .stDateInput input:focus,
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextArea textarea:focus {{
+            border-color: #1e293b;
+            outline: 1px solid #cbd5e1;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_date"]) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_date"]) {{
             top: 110px;
             right: 120px;
             width: 210px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_reference"]) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_reference"]) {{
             top: 155px;
             right: 120px;
             width: 260px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_company_name"]) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_company_name"]) {{
             top: 230px;
             left: 110px;
             width: 520px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_attention_name"]) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_attention_name"]) {{
             top: 270px;
             left: 110px;
             width: 420px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_subject"]) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_subject"]) {{
             top: 310px;
             left: 110px;
             width: 620px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_customer_address"]) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_customer_address"]) {{
             top: 350px;
             left: 110px;
             width: 620px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_customer_contact_name"]) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_customer_contact_name"]) {{
             top: 450px;
             left: 110px;
             width: 320px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_customer_contact"]) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_customer_contact"]) {{
             top: 480px;
             left: 110px;
             width: 320px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_salutation"]) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_salutation"]) {{
             top: 530px;
             left: 110px;
             width: 260px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_introduction"]) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_introduction"]) {{
             top: 570px;
             left: 110px;
             width: 820px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_closing"]) {{
+          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_closing"]) {{
             bottom: 190px;
             left: 110px;
             width: 320px;
           }}
         </style>
-        <div data-overlay-id="{overlay_id}"></div>
+        <div class="letterhead-surface" data-overlay-id="{overlay_id}"></div>
         """,
         unsafe_allow_html=True,
     )
@@ -8386,10 +8399,8 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
     if updated_rows != previous_rows:
         st.session_state["quotation_preview_items_dirty"] = False
 
-    closing_text = st.text_area(
-        "Closing / thanks",
-        value=st.session_state.get("quotation_closing") or "With Thanks & Kind Regards",
-        key="quotation_closing",
+    closing_text = (
+        st.session_state.get("quotation_closing") or "With Thanks & Kind Regards"
     )
 
     status_value = st.selectbox(
