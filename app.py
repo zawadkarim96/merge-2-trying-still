@@ -1681,9 +1681,6 @@ def normalize_quotation_items(
         "gross_total": 0.0,
         "discount_total": 0.0,
         "taxable_total": 0.0,
-        "cgst_total": 0.0,
-        "sgst_total": 0.0,
-        "igst_total": 0.0,
         "grand_total": 0.0,
     }
 
@@ -1700,17 +1697,11 @@ def normalize_quotation_items(
         quantity = max(_coerce_float(entry.get("quantity"), 0.0), 0.0)
         rate = max(_coerce_float(entry.get("rate"), 0.0), 0.0)
         discount_pct = _clamp_percentage(_coerce_float(entry.get("discount"), 0.0))
-        cgst_pct = _clamp_percentage(_coerce_float(entry.get("cgst"), 0.0))
-        sgst_pct = _clamp_percentage(_coerce_float(entry.get("sgst"), 0.0))
-        igst_pct = _clamp_percentage(_coerce_float(entry.get("igst"), 0.0))
 
         gross_amount = quantity * rate
         discount_amount = gross_amount * (discount_pct / 100.0)
         taxable_value = max(gross_amount - discount_amount, 0.0)
-        cgst_amount = taxable_value * (cgst_pct / 100.0)
-        sgst_amount = taxable_value * (sgst_pct / 100.0)
-        igst_amount = taxable_value * (igst_pct / 100.0)
-        line_total = taxable_value + cgst_amount + sgst_amount + igst_amount
+        line_total = taxable_value
 
         item = {
             "Item": len(cleaned) + 1,
@@ -1724,12 +1715,6 @@ def normalize_quotation_items(
             "Discount (%)": discount_pct,
             "Discount amount": discount_amount,
             "Taxable value": taxable_value,
-            "CGST (%)": cgst_pct,
-            "CGST amount": cgst_amount,
-            "SGST (%)": sgst_pct,
-            "SGST amount": sgst_amount,
-            "IGST (%)": igst_pct,
-            "IGST amount": igst_amount,
             "Line total": line_total,
         }
         cleaned.append(item)
@@ -1737,9 +1722,6 @@ def normalize_quotation_items(
         totals["gross_total"] += gross_amount
         totals["discount_total"] += discount_amount
         totals["taxable_total"] += taxable_value
-        totals["cgst_total"] += cgst_amount
-        totals["sgst_total"] += sgst_amount
-        totals["igst_total"] += igst_amount
         totals["grand_total"] += line_total
 
     return cleaned, totals
@@ -3557,6 +3539,156 @@ def _render_admin_record_history(conn):
                 hide_index=True,
             )
 
+
+def _render_admin_kpi_panel(conn) -> None:
+    user = get_current_user()
+    if clean_text(user.get("role")) != "admin":
+        return
+
+    staff_df = df_query(
+        conn,
+        dedent(
+            """
+            SELECT user_id, COALESCE(username, 'User #' || user_id) AS username
+            FROM users
+            WHERE LOWER(COALESCE(role, 'staff')) <> 'admin'
+            ORDER BY LOWER(username)
+            """
+        ),
+    )
+
+    if staff_df.empty:
+        st.caption("No staff accounts available for KPI tracking yet.")
+        return
+
+    today = date.today()
+    start_month = today.replace(day=1)
+    days_elapsed = max((today - start_month).days + 1, 1)
+
+    monthly_df = df_query(
+        conn,
+        dedent(
+            """
+            SELECT user_id,
+                   COUNT(*) AS monthly_reports,
+                   MAX(date(period_start)) AS last_report_date
+            FROM work_reports
+            WHERE period_type='daily'
+              AND strftime('%Y-%m', period_start) = strftime('%Y-%m', 'now')
+            GROUP BY user_id
+            """
+        ),
+    ).rename(columns={"last_report_date": "last_report_month"})
+
+    lifetime_df = df_query(
+        conn,
+        dedent(
+            """
+            SELECT user_id,
+                   COUNT(*) AS total_reports,
+                   MIN(date(period_start)) AS first_report_date,
+                   MAX(date(period_start)) AS last_report_date
+            FROM work_reports
+            WHERE period_type='daily'
+            GROUP BY user_id
+            """
+        ),
+    ).rename(columns={"last_report_date": "last_report_all"})
+
+    def _parse_date(value: object) -> Optional[date]:
+        try:
+            parsed = pd.to_datetime(value).date()
+        except Exception:
+            return None
+        return parsed
+
+    staff_df["user_id"] = staff_df["user_id"].apply(lambda val: int(float(val)))
+    staff_df = staff_df.rename(columns={"username": "Team member"})
+
+    merged = (
+        staff_df.merge(monthly_df, on="user_id", how="left")
+        .merge(lifetime_df, on="user_id", how="left")
+    )
+
+    merged[["monthly_reports", "total_reports"]] = merged[
+        ["monthly_reports", "total_reports"]
+    ].fillna(0)
+
+    kpi_rows: list[dict[str, object]] = []
+    for _, row in merged.iterrows():
+        monthly_reports = int(_coerce_float(row.get("monthly_reports"), 0.0))
+        total_reports = int(_coerce_float(row.get("total_reports"), 0.0))
+        last_seen = _parse_date(row.get("last_report_month")) or _parse_date(
+            row.get("last_report_all")
+        )
+        first_seen = _parse_date(row.get("first_report_date"))
+
+        days_since_last = (today - last_seen).days if last_seen else days_elapsed + 7
+        months_active = (
+            (today.year - first_seen.year) * 12 + today.month - first_seen.month + 1
+            if first_seen
+            else 1
+        )
+        months_active = max(months_active, 1)
+
+        monthly_completion = (monthly_reports / days_elapsed) * 100
+        recency_penalty = min(days_since_last * 3.0, 60.0)
+        momentum_boost = min((total_reports / months_active) * 2.5, 25.0)
+        monthly_score = max(
+            0.0,
+            min(100.0, monthly_completion - recency_penalty + 20.0 + momentum_boost),
+        )
+
+        lifetime_velocity = (total_reports / months_active) / 20.0
+        lifetime_score = max(
+            0.0,
+            min(
+                100.0,
+                (lifetime_velocity * 100.0) - min(days_since_last * 1.5, 40.0) + 20.0,
+            ),
+        )
+
+        status = "🚀 On track"
+        if monthly_score < 50:
+            status = "❗ Needs action"
+        elif monthly_score < 75:
+            status = "⚠️ Watch"
+
+        last_seen_label = (
+            format_time_ago(last_seen.isoformat())
+            if last_seen
+            else "No submissions yet"
+        )
+
+        kpi_rows.append(
+            {
+                "Team member": clean_text(row.get("Team member"))
+                or f"User #{int(row.get('user_id'))}",
+                "Monthly KPI": f"{monthly_score:,.0f}/100",
+                "Lifetime KPI": f"{lifetime_score:,.0f}/100",
+                "Signal": status,
+                "Last report": last_seen_label,
+                "This month": f"{monthly_reports}/{days_elapsed} days",
+            }
+        )
+
+    kpi_table = pd.DataFrame(kpi_rows)
+    if kpi_table.empty:
+        st.caption("KPI scores will appear after the team logs their first daily reports.")
+        return
+
+    st.markdown("#### 🛰️ Admin KPI radar")
+    st.caption(
+        "Composite scores blend daily report cadence, recency, and long-term momentum."
+        " Updated automatically every day."
+    )
+    st.dataframe(
+        kpi_table,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 # ---------- Pages ----------
 def dashboard(conn):
     st.subheader("📊 Dashboard")
@@ -4697,6 +4829,9 @@ def show_expiry_notifications(conn):
         if upcoming_sections
         else pd.DataFrame()
     )
+
+    if is_admin:
+        _render_admin_kpi_panel(conn)
 
     scope_filter_clause = f" AND {scope_clause}" if scope_clause else ""
     total_expired_query = dedent(
@@ -6836,15 +6971,23 @@ def _regenerate_quotation_pdf_from_workbook(file_path: Path) -> Optional[bytes]:
                 return _coerce_float(value, 0.0)
         return None
 
+    for item in items:
+        for tax_label in [
+            "CGST (%)",
+            "CGST amount",
+            "SGST (%)",
+            "SGST amount",
+            "IGST (%)",
+            "IGST amount",
+        ]:
+            item.pop(tax_label, None)
+
     totals = {
         "gross_total": _total_from_label("gross amount")
         or sum(_coerce_float(item.get("Gross amount"), 0.0) for item in items),
         "discount_total": _total_from_label("discount total")
         or sum(_coerce_float(item.get("Discount amount"), 0.0) for item in items),
         "taxable_total": sum(_coerce_float(item.get("Taxable value"), 0.0) for item in items),
-        "cgst_total": sum(_coerce_float(item.get("CGST amount"), 0.0) for item in items),
-        "sgst_total": sum(_coerce_float(item.get("SGST amount"), 0.0) for item in items),
-        "igst_total": sum(_coerce_float(item.get("IGST amount"), 0.0) for item in items),
         "grand_total": _total_from_label("grand total")
         or sum(_coerce_float(item.get("Line total"), 0.0) for item in items),
     }
@@ -8059,6 +8202,10 @@ def _render_quotation_section(conn):
 
     preview_source = st.session_state.get("quotation_preview_item_rows") or []
     preview_dirty = st.session_state.get("quotation_preview_items_dirty", False)
+    if preview_dirty:
+        # Keep the live preview in sync with the most recent editor rows so the
+        # letterhead never lags behind the table edits.
+        preview_source = st.session_state.get("quotation_item_rows") or preview_source
     preview_rows = [
         row for row in preview_source if _quotation_row_complete(row)
     ] or preview_source
@@ -12282,6 +12429,12 @@ def reports_page(conn):
         key="report_edit_select",
     )
 
+    # Preserve spreadsheet-style edits while working on the same report, but
+    # reset when switching to another record.
+    if st.session_state.get("report_grid_current_id") != selected_report_id:
+        st.session_state["report_grid_current_id"] = selected_report_id
+        st.session_state.pop("report_grid_editor_state", None)
+
     editing_record: Optional[dict] = None
     if selected_report_id is not None and not selectable_reports.empty:
         match = selectable_reports[
@@ -12420,6 +12573,8 @@ def reports_page(conn):
     )
     if "report_grid_import_rows" in st.session_state:
         grid_seed_rows = st.session_state.pop("report_grid_import_rows") or grid_seed_rows
+    elif st.session_state.get("report_grid_editor_state"):
+        grid_seed_rows = st.session_state["report_grid_editor_state"] or grid_seed_rows
     if not grid_seed_rows:
         fallback_row = _default_report_grid_row()
         if legacy_tasks:
@@ -12580,6 +12735,7 @@ def reports_page(conn):
             use_container_width=True,
             key="report_grid_editor",
         )
+        st.session_state["report_grid_editor_state"] = _grid_rows_from_editor(report_grid_df)
         remove_attachment = False
         attachment_upload = None
         if existing_attachment_value:
@@ -12611,6 +12767,7 @@ def reports_page(conn):
     if submitted:
         cleanup_path: Optional[str] = None
         grid_rows_to_store = _grid_rows_from_editor(report_grid_df)
+        st.session_state.pop("report_grid_editor_state", None)
         tasks_summary = _summarize_grid_column(
             grid_rows_to_store, "reported_complaints"
         )
