@@ -7528,6 +7528,128 @@ def _save_quotation_record(conn, payload: dict) -> Optional[int]:
     return int(cur.lastrowid)
 
 
+def _upsert_customer_from_manual_quotation(
+    conn,
+    *,
+    name: Optional[str],
+    company: Optional[str],
+    phone: Optional[str],
+    address: Optional[str],
+    district: Optional[str],
+    reference: Optional[str] = None,
+    created_by: Optional[int] = None,
+) -> Optional[int]:
+    """Insert or backfill a customer captured from a manual quotation entry."""
+
+    customer_name = clean_text(name)
+    company_name = clean_text(company)
+    phone_number = clean_text(phone)
+    street_address = clean_text(address)
+    district_label = clean_text(district)
+    reference_label = clean_text(reference)
+
+    if not any([customer_name, company_name, phone_number, street_address, district_label]):
+        return None
+
+    cursor = conn.cursor()
+
+    def _fetch_existing(query: str, params: tuple[object, ...]):
+        return cursor.execute(query, params).fetchone()
+
+    existing = None
+    if phone_number:
+        existing = _fetch_existing(
+            """
+            SELECT customer_id, name, company_name, phone, address, delivery_address, remarks
+            FROM customers
+            WHERE TRIM(IFNULL(phone, '')) = ?
+            ORDER BY customer_id DESC
+            LIMIT 1
+            """,
+            (phone_number,),
+        )
+    if existing is None and company_name:
+        existing = _fetch_existing(
+            """
+            SELECT customer_id, name, company_name, phone, address, delivery_address, remarks
+            FROM customers
+            WHERE LOWER(IFNULL(company_name, '')) = LOWER(?)
+            ORDER BY customer_id DESC
+            LIMIT 1
+            """,
+            (company_name,),
+        )
+    if existing is None and customer_name:
+        existing = _fetch_existing(
+            """
+            SELECT customer_id, name, company_name, phone, address, delivery_address, remarks
+            FROM customers
+            WHERE LOWER(IFNULL(name, '')) = LOWER(?)
+            ORDER BY customer_id DESC
+            LIMIT 1
+            """,
+            (customer_name,),
+        )
+
+    if existing:
+        (
+            customer_id,
+            existing_name,
+            existing_company,
+            existing_phone,
+            existing_address,
+            existing_delivery,
+            existing_remarks,
+        ) = existing
+
+        updates: dict[str, object] = {}
+        if not existing_name and customer_name:
+            updates["name"] = customer_name
+        if not existing_company and company_name:
+            updates["company_name"] = company_name
+        if not existing_phone and phone_number:
+            updates["phone"] = phone_number
+        if not existing_address and street_address:
+            updates["address"] = street_address
+        if not existing_delivery and street_address:
+            updates["delivery_address"] = street_address
+        if not existing_remarks and district_label:
+            updates["remarks"] = f"District: {district_label}"
+
+        if updates:
+            set_clause = ", ".join(f"{col}=?" for col in updates)
+            cursor.execute(
+                f"UPDATE customers SET {set_clause} WHERE customer_id=?",
+                (*updates.values(), customer_id),
+            )
+            conn.commit()
+        return customer_id
+
+    remark_parts = []
+    if district_label:
+        remark_parts.append(f"District: {district_label}")
+    if reference_label:
+        remark_parts.append(f"Quotation ref: {reference_label}")
+    remarks_value = " | ".join(remark_parts) if remark_parts else None
+
+    cursor.execute(
+        """
+        INSERT INTO customers (name, company_name, phone, address, delivery_address, remarks, created_by, dup_flag)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+        """,
+        (
+            customer_name or company_name,
+            company_name,
+            phone_number,
+            street_address,
+            street_address,
+            remarks_value,
+            created_by,
+        ),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
 def _persist_quotation_pdf(
     record_id: int, pdf_bytes: bytes, reference: Optional[str]
 ) -> Optional[str]:
@@ -7998,127 +8120,236 @@ def _render_quotation_section(conn):
             if reset_items:
                 st.session_state["quotation_item_rows"] = _default_quotation_items()
 
-            items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
-            if not items_df_seed.empty:
-                for legacy_col, new_col in (("hsn", "specs"), ("unit", "kva")):
-                    if legacy_col in items_df_seed.columns and new_col not in items_df_seed.columns:
-                        items_df_seed[new_col] = items_df_seed[legacy_col]
-                for required in ["kva", "specs", "note"]:
-                    if required not in items_df_seed.columns:
-                        items_df_seed[required] = ""
-                items_df_seed = items_df_seed[
-                    ["description", "kva", "specs", "note", "quantity", "rate", "discount"]
-                ]
-            if items_df_seed.empty:
-                items_df_seed = pd.DataFrame(_default_quotation_items())
+            items_rows = st.session_state.get("quotation_item_rows") or []
+            if not items_rows:
+                items_rows = _default_quotation_items()
 
-            items_df_seed["line_total"] = items_df_seed.apply(_compute_line_total, axis=1)
-            items_df_seed = items_df_seed[
-                [
-                    "description",
-                    "kva",
-                    "specs",
-                    "note",
-                    "quantity",
-                    "rate",
-                    "discount",
-                    "line_total",
-                ]
-            ]
+            previous_rows = list(items_rows)
+            updated_rows: list[dict[str, object]] = []
+            removed_any = False
 
-            previous_rows = list(st.session_state["quotation_item_rows"])
+            for idx, row in enumerate(items_rows):
+                with st.container():
+                    if idx > 0:
+                        st.divider()
 
-            items_editor = st.data_editor(
-                items_df_seed,
-                num_rows="dynamic",
-                hide_index=True,
-                key="quotation_items_table",
-                use_container_width=True,
-                column_config={
-                    "description": st.column_config.TextColumn(
-                        "Tracked products",
-                        help="Describe the item or service",
-                    ),
-                    "kva": st.column_config.TextColumn(
-                        "kVA / Capacity", help="Power rating for the item"
-                    ),
-                    "specs": st.column_config.TextColumn(
-                        "Specs", help="Key specifications or notes"
-                    ),
-                    "note": st.column_config.TextColumn(
-                        "Small description",
-                        help="Optional short note shown in smaller text",
-                    ),
-                    "quantity": st.column_config.NumberColumn(
-                        "Quantity",
-                        min_value=0.0,
-                        step=1.0,
-                        format="%.2f",
-                    ),
-                    "rate": st.column_config.NumberColumn(
-                        "Rate",
-                        min_value=0.0,
-                        step=100.0,
-                        format="%.2f",
-                    ),
-                    "discount": st.column_config.NumberColumn(
-                        "Discount (%)",
-                        help="Discount percentage for this line item",
-                        min_value=0.0,
-                        max_value=100.0,
-                        step=0.5,
-                        format="%.2f",
-                    ),
-                    "line_total": st.column_config.NumberColumn(
-                        "Amount",
-                        help="Quantity × rate after discount (read only)",
-                        format="%.2f",
-                        disabled=True,
-                    ),
-                },
-            )
-            edited_items: pd.DataFrame
-            editor_value = items_editor
-            if editor_value is None:
-                editor_value = st.session_state.get("quotation_items_table")
+                    header_cols = st.columns([4, 1])
+                    with header_cols[0]:
+                        st.markdown(f"**Item {idx + 1}**")
+                    with header_cols[1]:
+                        remove_clicked = st.button(
+                            "Remove",
+                            key=f"quotation_remove_item_{idx}",
+                            use_container_width=True,
+                        )
 
-            if isinstance(editor_value, pd.DataFrame):
-                edited_items = editor_value.copy().reset_index(drop=True)
-            elif isinstance(editor_value, Mapping) and "data" in editor_value:
-                edited_items = pd.DataFrame(editor_value.get("data"))
-            else:
-                edited_items = pd.DataFrame(editor_value or previous_rows)
+                    detail_cols = st.columns([3, 2, 2])
+                    with detail_cols[0]:
+                        description = st.text_input(
+                            "Tracked products",
+                            value=row.get("description", ""),
+                            key=f"quotation_item_{idx}_description",
+                            help="Describe the item or service",
+                        )
+                        note = st.text_input(
+                            "Small description",
+                            value=row.get("note", ""),
+                            key=f"quotation_item_{idx}_note",
+                            help="Optional short note shown in smaller text",
+                        )
 
-            edited_items = edited_items.drop(columns=["line_total"], errors="ignore")
-            edited_items = edited_items.where(pd.notna(edited_items), None)
-            new_rows = edited_items.to_dict("records") or previous_rows
-            st.session_state["quotation_item_rows"] = new_rows
-            st.session_state["quotation_complete_item_rows"] = [
-                row
-                for row in st.session_state["quotation_item_rows"]
-                if _quotation_row_complete(row)
-            ]
+                    with detail_cols[1]:
+                        kva = st.text_input(
+                            "kVA / Capacity",
+                            value=row.get("kva", ""),
+                            key=f"quotation_item_{idx}_kva",
+                            help="Power rating for the item",
+                        )
+                        specs = st.text_input(
+                            "Specs",
+                            value=row.get("specs", ""),
+                            key=f"quotation_item_{idx}_specs",
+                            help="Key specifications or notes",
+                        )
 
-            if new_rows != previous_rows:
-                st.session_state["quotation_preview_items_dirty"] = True
+                    with detail_cols[2]:
+                        quantity = st.number_input(
+                            "Quantity",
+                            min_value=0.0,
+                            step=1.0,
+                            format="%.2f",
+                            value=_coerce_float(row.get("quantity"), 0.0),
+                            key=f"quotation_item_{idx}_quantity",
+                        )
+                        rate = st.number_input(
+                            "Rate",
+                            min_value=0.0,
+                            step=100.0,
+                            format="%.2f",
+                            value=_coerce_float(row.get("rate"), 0.0),
+                            key=f"quotation_item_{idx}_rate",
+                        )
+                        discount = st.number_input(
+                            "Discount (%)",
+                            help="Discount percentage for this line item",
+                            min_value=0.0,
+                            max_value=100.0,
+                            step=0.5,
+                            format="%.2f",
+                            value=_coerce_float(row.get("discount"), 0.0),
+                            key=f"quotation_item_{idx}_discount",
+                        )
+                        line_total = _compute_line_total(
+                            {
+                                "quantity": quantity,
+                                "rate": rate,
+                                "discount": discount,
+                            }
+                        )
+                        st.caption(f"Amount: Tk {line_total:,.2f}")
 
-            refresh_needed = st.session_state.get(
-                "quotation_preview_items_dirty", False
-            )
-            if refresh_needed:
-                st.info(
-                    "Live preview refreshes after you sync the product table. "
-                    "Continue filling the form, then update the preview when ready.",
-                    icon="⏸️",
+                if remove_clicked:
+                    removed_any = True
+                    continue
+
+                updated_rows.append(
+                    {
+                        "description": description,
+                        "kva": kva,
+                        "specs": specs,
+                        "note": note,
+                        "quantity": quantity,
+                        "rate": rate,
+                        "discount": discount,
+                    }
                 )
-            if st.button(
-                "Refresh live preview",
-                use_container_width=True,
-                key="quotation_refresh_preview",
-            ):
-                st.session_state["quotation_preview_item_rows"] = [
-                    dict(row) for row in st.session_state.get("quotation_item_rows", [])
-                ]
+
+            if removed_any and not updated_rows:
+                updated_rows = _default_quotation_items()
+
+            st.session_state["quotation_item_rows"] = updated_rows
+            st.session_state["quotation_complete_item_rows"] = [
+                row for row in updated_rows if _quotation_row_complete(row)
+            ]
+
+            overlay_card = st.container()
+            overlay_id = f"quotation-overlay-{render_id}"
+            letterhead_path = _resolve_letterhead_path(template_choice)
+            letterhead_uri = None
+            if letterhead_path and letterhead_path.exists():
+                try:
+                    letterhead_uri = encode_image_as_data_uri(letterhead_path)
+                except Exception:
+                    letterhead_uri = None
+            overlay_bg = (
+                f"background-image: url('{letterhead_uri}');"
+                if letterhead_uri
+                else "background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);"
+            )
+            overlay_card.markdown(
+                f"""
+                <style>
+                  #{overlay_id} {{
+                    position: relative;
+                    {overlay_bg}
+                    background-size: contain;
+                    background-repeat: no-repeat;
+                    background-position: center top;
+                    border: 1px solid #e2e8f0;
+                    border-radius: 14px;
+                    padding: 120px 74px 90px 74px;
+                    box-shadow: 0 18px 48px rgba(15, 23, 42, 0.12);
+                    overflow: hidden;
+                  }}
+                  #{overlay_id} .overlay-field input,
+                  #{overlay_id} .overlay-field textarea {{
+                    background: rgba(255, 255, 255, 0.9);
+                    border-radius: 10px;
+                  }}
+                  #{overlay_id} .overlay-field label {{
+                    font-weight: 600;
+                  }}
+                </style>
+                <div id="{overlay_id}">
+                  <div style="position:absolute; inset:0; backdrop-filter: blur(0.2px);"></div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            with overlay_card:
+                st.markdown("##### Fill on the letterhead")
+                top_cols = st.columns([2, 1])
+                with top_cols[1]:
+                    st.date_input(
+                        "Date",
+                        value=quotation_date,
+                        key="quotation_date_overlay",
+                        help="Displayed in the top-right of the letterhead",
+                    )
+                    st.text_input(
+                        "Reference", reference_value, key="quotation_reference_overlay"
+                    )
+                with top_cols[0]:
+                    st.text_input(
+                        "Subject",
+                        value=subject_line,
+                        key="quotation_subject_overlay",
+                        help="Appears under the attention line",
+                    )
+                    st.text_input(
+                        "Attention name",
+                        value=attention_name,
+                        key="quotation_attention_overlay",
+                    )
+                    st.text_area(
+                        "To / address block",
+                        value=customer_address,
+                        key="quotation_address_overlay",
+                        help="Recipient block on the left of the letterhead",
+                    )
+
+                st.text_area(
+                    "Salutation and intro",
+                    value=salutation + " " + intro_text if salutation else intro_text,
+                    key="quotation_intro_overlay",
+                    help="Appears above the price schedule",
+                )
+                st.caption(
+                    "Updates are reflected immediately in the live preview below, "
+                    "so you can edit the quotation directly on the letterhead."
+                )
+
+            overlay_reference = st.session_state.get("quotation_reference_overlay")
+            if overlay_reference is not None:
+                reference_value = overlay_reference
+                st.session_state["quotation_reference"] = reference_value
+
+            overlay_subject = st.session_state.get("quotation_subject_overlay")
+            if overlay_subject is not None:
+                subject_line = overlay_subject
+                st.session_state["quotation_subject"] = subject_line
+
+            overlay_attention = st.session_state.get("quotation_attention_overlay")
+            if overlay_attention is not None:
+                attention_name = overlay_attention
+                st.session_state["quotation_attention_name"] = attention_name
+
+            overlay_address = st.session_state.get("quotation_address_overlay")
+            if overlay_address is not None:
+                customer_address = overlay_address
+                st.session_state["quotation_customer_address"] = customer_address
+
+            overlay_date = st.session_state.get("quotation_date_overlay")
+            if overlay_date is not None:
+                quotation_date = overlay_date
+                st.session_state["quotation_date"] = quotation_date
+
+            overlay_intro = st.session_state.get("quotation_intro_overlay")
+            if overlay_intro:
+                intro_text = overlay_intro
+                st.session_state["quotation_introduction"] = intro_text
+
+            if updated_rows != previous_rows:
                 st.session_state["quotation_preview_items_dirty"] = False
 
             closing_text = st.text_area(
@@ -8194,15 +8425,8 @@ def _render_quotation_section(conn):
                 st.toast("Quotation form reset", icon="ℹ️")
                 _safe_rerun()
 
-    preview_source = st.session_state.get("quotation_preview_item_rows") or []
-    preview_dirty = st.session_state.get("quotation_preview_items_dirty", False)
-    if preview_dirty:
-        # Keep the live preview in sync with the most recent editor rows so the
-        # letterhead never lags behind the table edits.
-        preview_source = st.session_state.get("quotation_item_rows") or preview_source
-    preview_rows = [
-        row for row in preview_source if _quotation_row_complete(row)
-    ] or preview_source
+    preview_source = st.session_state.get("quotation_item_rows") or []
+    preview_rows = [row for row in preview_source if _quotation_row_complete(row)] or preview_source
     preview_items, preview_totals = normalize_quotation_items(preview_rows)
     preview_grand_total = format_money(preview_totals.get("grand_total")) or f"{_coerce_float(preview_totals.get('grand_total'), 0.0):,.2f}"
     preview_metadata = {
@@ -8230,26 +8454,16 @@ def _render_quotation_section(conn):
 
     with preview_col:
         st.markdown("#### Live quotation preview")
-        if preview_dirty:
-            st.warning(
-                "Product rows will appear once you refresh the live preview after editing the table.",
-                icon="⏸️",
-            )
-            st.info(
-                "Preview updates only after you sync the product table. Keep editing, then refresh when ready.",
-                icon="📝",
-            )
-        else:
-            st.caption(
-                "Compose on the left and review the letterhead beside the form. Refresh the product table to update this view."
-            )
-            _render_letterhead_preview(
-                preview_metadata,
-                preview_grand_total,
-                template_choice=st.session_state.get("quotation_letter_template"),
-                items=preview_items,
-                totals=preview_totals,
-            )
+        st.caption(
+            "Compose on the left and see every change reflected on the letterhead instantly."
+        )
+        _render_letterhead_preview(
+            preview_metadata,
+            preview_grand_total,
+            template_choice=st.session_state.get("quotation_letter_template"),
+            items=preview_items,
+            totals=preview_totals,
+        )
 
         if submit:
             item_records = (
@@ -8269,6 +8483,18 @@ def _render_quotation_section(conn):
             if not items_clean:
                 st.error("Add at least one item with a description to create a quotation.")
                 return
+
+            if selected_customer is None:
+                _upsert_customer_from_manual_quotation(
+                    conn,
+                    name=customer_contact_name or customer_company,
+                    company=customer_company,
+                    phone=customer_contact,
+                    address=customer_address,
+                    district=customer_district,
+                    reference=reference_value,
+                    created_by=current_user_id(),
+                )
 
             reminder_days = follow_up_presets.get(follow_up_choice) if status_value != "paid" else None
             follow_up_date = follow_up_date_value if status_value != "paid" else None
