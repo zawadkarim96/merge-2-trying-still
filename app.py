@@ -3655,27 +3655,12 @@ def _render_admin_kpi_panel(conn) -> None:
             ),
         )
 
-        status = "🚀 On track"
-        if monthly_score < 50:
-            status = "❗ Needs action"
-        elif monthly_score < 75:
-            status = "⚠️ Watch"
-
-        last_seen_label = (
-            format_time_ago(last_seen.isoformat())
-            if last_seen
-            else "No submissions yet"
-        )
-
         kpi_rows.append(
             {
                 "Team member": clean_text(row.get("Team member"))
                 or f"User #{int(row.get('user_id'))}",
                 "Monthly KPI": f"{monthly_score:,.0f}/100",
                 "Lifetime KPI": f"{lifetime_score:,.0f}/100",
-                "Signal": status,
-                "Last report": last_seen_label,
-                "This month": f"{monthly_reports}/{days_elapsed} days",
             }
         )
 
@@ -3684,11 +3669,10 @@ def _render_admin_kpi_panel(conn) -> None:
         st.caption("KPI scores will appear after the team logs their first daily reports.")
         return
 
-    st.markdown("#### 🛰️ Admin KPI radar")
-    st.caption(
-        "Composite scores blend daily report cadence, recency, and long-term momentum."
-        " Updated automatically every day."
-    )
+    kpi_table = kpi_table[["Team member", "Monthly KPI", "Lifetime KPI"]]
+
+    st.markdown("##### 🛰️ Admin KPI snapshot")
+    st.caption("Simplified lifetime and monthly scores for quick admin review.")
     st.dataframe(
         kpi_table,
         use_container_width=True,
@@ -4637,6 +4621,10 @@ def dashboard(conn):
             use_container_width=True,
         )
 
+    if is_admin:
+        st.markdown("---")
+        _render_admin_kpi_panel(conn)
+
 
 def show_expiry_notifications(conn):
     is_admin = current_user_is_admin()
@@ -4838,9 +4826,6 @@ def show_expiry_notifications(conn):
         if upcoming_sections
         else pd.DataFrame()
     )
-
-    if is_admin:
-        _render_admin_kpi_panel(conn)
 
     scope_filter_clause = f" AND {scope_clause}" if scope_clause else ""
     total_expired_query = dedent(
@@ -8095,19 +8080,14 @@ def _render_quotation_section(conn):
             edited_items: pd.DataFrame
             editor_value = items_editor
 
-            if not isinstance(editor_value, pd.DataFrame):
-                editor_value = st.session_state.get("quotation_items_table")
-
             if isinstance(editor_value, pd.DataFrame):
-                edited_items = editor_value.copy()
-                edited_items = edited_items.where(pd.notna(edited_items), None)
+                edited_items = editor_value.copy().reset_index(drop=True)
             else:
-                edited_items = pd.DataFrame(previous_rows)
+                edited_items = pd.DataFrame(editor_value or previous_rows)
 
-            edited_items["line_total"] = edited_items.apply(_compute_line_total, axis=1)
-            new_rows = edited_items.to_dict("records")
-            if not new_rows and previous_rows:
-                new_rows = previous_rows
+            edited_items = edited_items.drop(columns=["line_total"], errors="ignore")
+            edited_items = edited_items.where(pd.notna(edited_items), None)
+            new_rows = edited_items.to_dict("records") or previous_rows
             st.session_state["quotation_item_rows"] = new_rows
             st.session_state["quotation_complete_item_rows"] = [
                 row
