@@ -8020,10 +8020,43 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         else "background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);"
     )
 
-    def _overlay_slot(label: str, *, key: str, placeholder: str = "", height: int | None = None, is_area: bool = False):
+    items_toolbar = st.columns(3)
+    with items_toolbar[0]:
+        add_item = st.button("Add item", key="quotation_add_item", use_container_width=True)
+    with items_toolbar[1]:
+        clear_items = st.button("Clear items", key="quotation_clear_items", use_container_width=True)
+    with items_toolbar[2]:
+        reset_items = st.button(
+            "Reset defaults", key="quotation_reset_items", use_container_width=True
+        )
+    if add_item:
+        st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
+    if clear_items:
+        st.session_state["quotation_item_rows"] = []
+    if reset_items:
+        st.session_state["quotation_item_rows"] = _default_quotation_items()
+
+    items_rows = st.session_state.get("quotation_item_rows") or []
+    if not items_rows:
+        items_rows = _default_quotation_items()
+
+    previous_rows = list(items_rows)
+    updated_rows: list[dict[str, object]] = []
+    removed_any = False
+
+    def _overlay_slot(
+        label: str,
+        *,
+        key: str,
+        placeholder: str = "",
+        height: int | None = None,
+        is_area: bool = False,
+        style: str = "",
+    ):
         field_container = st.container()
         field_container.markdown(
-            f"<div class='letterhead-field' data-field='{key}'></div>", unsafe_allow_html=True
+            f"<div class='letterhead-field-anchor' data-overlay-id='{overlay_id}' data-field='{key}' style='{style}'></div>",
+            unsafe_allow_html=True,
         )
         with field_container:
             if is_area:
@@ -8059,9 +8092,9 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             position: relative;
             border: 1px solid #e2e8f0;
             border-radius: 16px;
-            padding: 120px 86px 150px 86px;
+            padding: 108px 76px 140px 76px;
             box-shadow: 0 16px 38px rgba(15, 23, 42, 0.12);
-            min-height: 1120px;
+            min-height: 1180px;
             overflow: hidden;
             aspect-ratio: 210 / 297;
             background: #f8fafc;
@@ -8087,20 +8120,20 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             margin: 0 !important;
             padding: 0 !important;
           }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .letterhead-field {{
-            display: none;
-          }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .letterhead-field-anchor,
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .letterhead-row-anchor {{
             position: absolute;
+            inset: auto;
             z-index: 3;
           }}
           div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextInput > div > input,
           div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stDateInput input,
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stNumberInput input,
           div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextArea textarea {{
-            background: rgba(255, 255, 255, 0.35);
+            background: rgba(255, 255, 255, 0.55);
             border: 0;
             border-bottom: 1px dashed #94a3b8;
-            border-radius: 0;
+            border-radius: 8px;
             box-shadow: none;
             padding: 6px 8px;
             font-size: 14px;
@@ -8108,64 +8141,18 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
           }}
           div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextInput > div > input:focus,
           div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stDateInput input:focus,
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stNumberInput input:focus,
           div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextArea textarea:focus {{
             border-color: #1e293b;
             outline: 1px solid #cbd5e1;
           }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_date"]) {{
-            top: 110px;
-            right: 120px;
-            width: 210px;
-          }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_reference"]) {{
-            top: 155px;
-            right: 120px;
-            width: 260px;
-          }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_company_name"]) {{
-            top: 230px;
-            left: 110px;
-            width: 520px;
-          }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_attention_name"]) {{
-            top: 270px;
-            left: 110px;
-            width: 420px;
-          }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_subject"]) {{
-            top: 310px;
-            left: 110px;
-            width: 620px;
-          }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_customer_address"]) {{
-            top: 350px;
-            left: 110px;
-            width: 620px;
-          }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_customer_contact_name"]) {{
-            top: 450px;
-            left: 110px;
-            width: 320px;
-          }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_customer_contact"]) {{
-            top: 480px;
-            left: 110px;
-            width: 320px;
-          }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_salutation"]) {{
-            top: 530px;
-            left: 110px;
-            width: 260px;
-          }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_introduction"]) {{
-            top: 570px;
-            left: 110px;
-            width: 820px;
-          }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_closing"]) {{
-            bottom: 190px;
-            left: 110px;
-            width: 320px;
+          .letterhead-grid-label {
+            font-size: 12px;
+            color: #475569;
+            margin-bottom: 2px;
+          }
+          .letterhead-surface {{
+            display: none;
           }}
         </style>
         <div class="letterhead-surface" data-overlay-id="{overlay_id}"></div>
@@ -8174,42 +8161,191 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
     )
 
     with overlay_canvas:
-        st.caption("Click directly on the letterhead to fill each field.")
-        _overlay_slot("Date", key="quotation_date", placeholder="Date")
-        _overlay_slot("Reference number", key="quotation_reference", placeholder="Reference")
-        _overlay_slot("To / Customer company", key="quotation_company_name", placeholder="Customer company")
-        _overlay_slot("Attention", key="quotation_attention_name", placeholder="Primary contact person")
-        _overlay_slot("Subject", key="quotation_subject", placeholder="Subject for this quotation")
+        st.caption("Edit every printed field directly on the letterhead overlay.")
+        header_positions = {
+            "quotation_date": "top: 94px; right: 110px; width: 210px;",
+            "quotation_reference": "top: 136px; right: 110px; width: 240px;",
+            "quotation_company_name": "top: 210px; left: 96px; width: 520px;",
+            "quotation_attention_name": "top: 250px; left: 96px; width: 420px;",
+            "quotation_subject": "top: 288px; left: 96px; width: 620px;",
+            "quotation_customer_address": "top: 324px; left: 96px; width: 640px; height: 90px;",
+            "quotation_salutation": "top: 436px; left: 96px; width: 320px;",
+            "quotation_introduction": "top: 468px; left: 96px; width: 820px; height: 120px;",
+            "quotation_closing": "top: 986px; left: 96px; width: 360px;",
+        }
+
+        _overlay_slot(
+            "Date",
+            key="quotation_date",
+            placeholder="Date",
+            style=header_positions["quotation_date"],
+        )
+        _overlay_slot(
+            "Reference number",
+            key="quotation_reference",
+            placeholder="Reference",
+            style=header_positions["quotation_reference"],
+        )
+        _overlay_slot(
+            "To / Customer company",
+            key="quotation_company_name",
+            placeholder="Customer company",
+            style=header_positions["quotation_company_name"],
+        )
+        _overlay_slot(
+            "Attention",
+            key="quotation_attention_name",
+            placeholder="Primary contact person",
+            style=header_positions["quotation_attention_name"],
+        )
+        _overlay_slot(
+            "Subject",
+            key="quotation_subject",
+            placeholder="Subject for this quotation",
+            style=header_positions["quotation_subject"],
+        )
         _overlay_slot(
             "Customer address block",
             key="quotation_customer_address",
             placeholder="Full address shown under the 'To' section",
             is_area=True,
             height=90,
+            style=header_positions["quotation_customer_address"],
         )
         _overlay_slot(
-            "Customer contact name",
-            key="quotation_customer_contact_name",
-            placeholder="Customer contact person",
+            "Salutation",
+            key="quotation_salutation",
+            placeholder="Dear Sir,",
+            style=header_positions["quotation_salutation"],
         )
-        _overlay_slot(
-            "Customer contact number",
-            key="quotation_customer_contact",
-            placeholder="Phone number",
-        )
-        _overlay_slot("Salutation", key="quotation_salutation", placeholder="Dear Sir,")
         _overlay_slot(
             "Introduction",
             key="quotation_introduction",
             placeholder="Opening paragraph above the price schedule",
             is_area=True,
             height=120,
+            style=header_positions["quotation_introduction"],
         )
         _overlay_slot(
             "Closing / thanks",
             key="quotation_closing",
             placeholder="With Thanks & Kind Regards",
+            style=header_positions["quotation_closing"],
         )
+
+        table_top = 610
+        table_left = 70
+        table_width = 840
+        row_height = 58
+
+        for idx, row in enumerate(items_rows):
+            row_container = st.container()
+            row_style = (
+                f"top: {table_top + idx * row_height}px; left: {table_left}px; width: {table_width}px;"
+            )
+            row_container.markdown(
+                f"<div class='letterhead-row-anchor' data-overlay-id='{overlay_id}' data-row='{idx}' style='{row_style}'></div>",
+                unsafe_allow_html=True,
+            )
+            with row_container:
+                row_cols = st.columns([2.8, 1.2, 0.9, 1.1, 0.9, 1.1, 0.6], gap="small")
+                with row_cols[0]:
+                    description = st.text_input(
+                        "Description",
+                        value=row.get("description", ""),
+                        key=f"quotation_item_{idx}_description",
+                        placeholder="Item description",
+                        label_visibility="collapsed",
+                    )
+                with row_cols[1]:
+                    kva = st.text_input(
+                        "Capacity",
+                        value=row.get("kva", ""),
+                        key=f"quotation_item_{idx}_kva",
+                        placeholder="kVA / Capacity",
+                        label_visibility="collapsed",
+                    )
+                with row_cols[2]:
+                    quantity = st.number_input(
+                        "Quantity",
+                        min_value=0.0,
+                        step=1.0,
+                        format="%.2f",
+                        value=_coerce_float(row.get("quantity"), 0.0),
+                        key=f"quotation_item_{idx}_quantity",
+                        label_visibility="collapsed",
+                    )
+                with row_cols[3]:
+                    rate = st.number_input(
+                        "Rate",
+                        min_value=0.0,
+                        step=100.0,
+                        format="%.2f",
+                        value=_coerce_float(row.get("rate"), 0.0),
+                        key=f"quotation_item_{idx}_rate",
+                        label_visibility="collapsed",
+                    )
+                with row_cols[4]:
+                    discount = st.number_input(
+                        "Discount (%)",
+                        help="Discount percentage for this line item",
+                        min_value=0.0,
+                        max_value=100.0,
+                        step=0.5,
+                        format="%.2f",
+                        value=_coerce_float(row.get("discount"), 0.0),
+                        key=f"quotation_item_{idx}_discount",
+                        label_visibility="collapsed",
+                    )
+                with row_cols[5]:
+                    line_total = _compute_line_total(
+                        {
+                            "quantity": quantity,
+                            "rate": rate,
+                            "discount": discount,
+                        }
+                    )
+                    st.text_input(
+                        "Line total",
+                        value=f"{line_total:,.2f}",
+                        key=f"quotation_item_{idx}_line_total_display",
+                        disabled=True,
+                        label_visibility="collapsed",
+                    )
+                with row_cols[6]:
+                    remove_clicked = st.button(
+                        "✕",
+                        key=f"quotation_remove_item_{idx}",
+                        use_container_width=True,
+                        help="Remove this row",
+                    )
+
+            if remove_clicked:
+                removed_any = True
+                continue
+
+            updated_rows.append(
+                {
+                    "description": description,
+                    "kva": kva,
+                    "specs": row.get("specs", ""),
+                    "note": row.get("note", ""),
+                    "quantity": quantity,
+                    "rate": rate,
+                    "discount": discount,
+                }
+            )
+
+    if removed_any and not updated_rows:
+        updated_rows = _default_quotation_items()
+
+    st.session_state["quotation_item_rows"] = updated_rows
+    st.session_state["quotation_complete_item_rows"] = [
+        row for row in updated_rows if _quotation_row_complete(row)
+    ]
+
+    if updated_rows != previous_rows:
+        st.session_state["quotation_preview_items_dirty"] = False
 
     quote_type = st.selectbox(
         "Quote type",
@@ -8267,138 +8403,6 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             value=admin_notes,
             key="quotation_admin_notes",
         )
-
-    st.markdown("#### Product details")
-    items_toolbar = st.columns(3)
-    with items_toolbar[0]:
-        add_item = st.button("Add item", key="quotation_add_item", use_container_width=True)
-    with items_toolbar[1]:
-        clear_items = st.button("Clear items", key="quotation_clear_items", use_container_width=True)
-    with items_toolbar[2]:
-        reset_items = st.button(
-            "Reset defaults", key="quotation_reset_items", use_container_width=True
-        )
-    if add_item:
-        st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
-    if clear_items:
-        st.session_state["quotation_item_rows"] = []
-    if reset_items:
-        st.session_state["quotation_item_rows"] = _default_quotation_items()
-
-    items_rows = st.session_state.get("quotation_item_rows") or []
-    if not items_rows:
-        items_rows = _default_quotation_items()
-
-    previous_rows = list(items_rows)
-    updated_rows: list[dict[str, object]] = []
-    removed_any = False
-
-    for idx, row in enumerate(items_rows):
-        with st.container():
-            if idx > 0:
-                st.divider()
-
-            header_cols = st.columns([4, 1])
-            with header_cols[0]:
-                st.markdown(f"**Item {idx + 1}**")
-            with header_cols[1]:
-                remove_clicked = st.button(
-                    "Remove",
-                    key=f"quotation_remove_item_{idx}",
-                    use_container_width=True,
-                )
-
-            detail_cols = st.columns([3, 2, 2])
-            with detail_cols[0]:
-                description = st.text_input(
-                    "Tracked products",
-                    value=row.get("description", ""),
-                    key=f"quotation_item_{idx}_description",
-                    help="Describe the item or service",
-                )
-                note = st.text_input(
-                    "Small description",
-                    value=row.get("note", ""),
-                    key=f"quotation_item_{idx}_note",
-                    help="Optional short note shown in smaller text",
-                )
-
-            with detail_cols[1]:
-                kva = st.text_input(
-                    "kVA / Capacity",
-                    value=row.get("kva", ""),
-                    key=f"quotation_item_{idx}_kva",
-                    help="Power rating for the item",
-                )
-                specs = st.text_input(
-                    "Specs",
-                    value=row.get("specs", ""),
-                    key=f"quotation_item_{idx}_specs",
-                    help="Key specifications or notes",
-                )
-
-            with detail_cols[2]:
-                quantity = st.number_input(
-                    "Quantity",
-                    min_value=0.0,
-                    step=1.0,
-                    format="%.2f",
-                    value=_coerce_float(row.get("quantity"), 0.0),
-                    key=f"quotation_item_{idx}_quantity",
-                )
-                rate = st.number_input(
-                    "Rate",
-                    min_value=0.0,
-                    step=100.0,
-                    format="%.2f",
-                    value=_coerce_float(row.get("rate"), 0.0),
-                    key=f"quotation_item_{idx}_rate",
-                )
-                discount = st.number_input(
-                    "Discount (%)",
-                    help="Discount percentage for this line item",
-                    min_value=0.0,
-                    max_value=100.0,
-                    step=0.5,
-                    format="%.2f",
-                    value=_coerce_float(row.get("discount"), 0.0),
-                    key=f"quotation_item_{idx}_discount",
-                )
-                line_total = _compute_line_total(
-                    {
-                        "quantity": quantity,
-                        "rate": rate,
-                        "discount": discount,
-                    }
-                )
-                st.caption(f"Amount: Tk {line_total:,.2f}")
-
-        if remove_clicked:
-            removed_any = True
-            continue
-
-        updated_rows.append(
-            {
-                "description": description,
-                "kva": kva,
-                "specs": specs,
-                "note": note,
-                "quantity": quantity,
-                "rate": rate,
-                "discount": discount,
-            }
-        )
-
-    if removed_any and not updated_rows:
-        updated_rows = _default_quotation_items()
-
-    st.session_state["quotation_item_rows"] = updated_rows
-    st.session_state["quotation_complete_item_rows"] = [
-        row for row in updated_rows if _quotation_row_complete(row)
-    ]
-
-    if updated_rows != previous_rows:
-        st.session_state["quotation_preview_items_dirty"] = False
 
     closing_text = (
         st.session_state.get("quotation_closing") or "With Thanks & Kind Regards"
