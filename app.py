@@ -8085,54 +8085,79 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
 
     overlay_canvas = overlay_card.container()
 
-    # Keep CSS braces double-escaped inside this f-string to avoid runtime NameError
-    # when Streamlit renders the template.
+    header_positions = {
+        "quotation_date": "top: 72px; right: 92px; width: 210px;",
+        "quotation_reference": "top: 110px; right: 92px; width: 240px;",
+        "quotation_company_name": "top: 190px; left: 88px; width: 520px;",
+        "quotation_attention_name": "top: 226px; left: 88px; width: 420px;",
+        "quotation_subject": "top: 262px; left: 88px; width: 620px;",
+        "quotation_customer_address": "top: 300px; left: 88px; width: 640px; height: 94px;",
+        "quotation_salutation": "top: 414px; left: 88px; width: 320px;",
+        "quotation_introduction": "top: 450px; left: 88px; width: 820px; height: 120px;",
+        "quotation_closing": "top: 956px; left: 88px; width: 360px;",
+    }
+
+    table_top = 610
+    table_left = 70
+    table_width = 840
+    row_height = 58
+
+    row_css_rules = "\n".join(
+        [
+            f".letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-row-anchor[data-row=\"{idx}\"]) {{ position: absolute; top: {table_top + idx * row_height}px; left: {table_left}px; width: {table_width}px; }}"
+            for idx, _ in enumerate(items_rows)
+        ]
+    )
+
+    field_css_rules = "\n".join(
+        [
+            f".letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-field-anchor[data-field=\"{key}\"]) {{ position: absolute; {style} }}"
+            for key, style in header_positions.items()
+        ]
+    )
+
     overlay_canvas.markdown(
         f"""
         <style>
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) {{
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] {{
             position: relative;
             border: 1px solid #e2e8f0;
             border-radius: 16px;
-            padding: 108px 76px 140px 76px;
+            padding: 80px 64px 120px 64px;
             box-shadow: 0 16px 38px rgba(15, 23, 42, 0.12);
             min-height: 1180px;
             overflow: hidden;
             aspect-ratio: 210 / 297;
-            background: #f8fafc;
+            background-color: #f8fafc;
+            background-image: none;
+            margin: 0 auto 22px auto;
           }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"])::before {{
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"]::before {{
             content: "";
             position: absolute;
-            inset: 0;
+            inset: 24px 24px 24px 24px;
             {overlay_bg}
             background-size: contain;
             background-repeat: no-repeat;
             background-position: center top;
+            border-radius: 8px;
             z-index: 0;
           }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"])::after {{
-            content: "";
-            position: absolute;
-            inset: 0;
-            background: linear-gradient(180deg, rgba(248, 250, 252, 0.35) 0%, rgba(226, 232, 240, 0.2) 100%);
-            z-index: 1;
-          }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"] {{
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] > div[data-testid=\"stVerticalBlock\"] {{
             margin: 0 !important;
             padding: 0 !important;
           }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .letterhead-field-anchor,
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .letterhead-row-anchor {{
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .letterhead-field-anchor,
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .letterhead-row-anchor {{
             position: absolute;
             inset: auto;
-            z-index: 3;
+            z-index: 1;
           }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextInput > div > input,
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stDateInput input,
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stNumberInput input,
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextArea textarea {{
-            background: rgba(255, 255, 255, 0.55);
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stTextInput > div > input,
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stDateInput input,
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stNumberInput input,
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stTextArea textarea {{
+            background: rgba(255, 255, 255, 0.85);
             border: 0;
             border-bottom: 1px dashed #94a3b8;
             border-radius: 8px;
@@ -8141,10 +8166,10 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             font-size: 14px;
             color: #0f172a;
           }}
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextInput > div > input:focus,
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stDateInput input:focus,
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stNumberInput input:focus,
-          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextArea textarea:focus {{
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stTextInput > div > input:focus,
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stDateInput input:focus,
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stNumberInput input:focus,
+          .letterhead-wrapper[data-overlay-id=\"{overlay_id}\"] .stTextArea textarea:focus {{
             border-color: #1e293b;
             outline: 1px solid #cbd5e1;
           }}
@@ -8153,30 +8178,17 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             color: #475569;
             margin-bottom: 2px;
           }}
-          .letterhead-surface {{
-            display: none;
-          }}
+          {field_css_rules}
+          {row_css_rules}
         </style>
-        <div class="letterhead-surface" data-overlay-id="{overlay_id}"></div>
+        <div class="letterhead-wrapper" data-overlay-id="{overlay_id}">
         """,
         unsafe_allow_html=True,
     )
 
     with overlay_canvas:
         st.caption("Edit every printed field directly on the letterhead overlay.")
-        header_positions = {
-            "quotation_date": "top: 94px; right: 110px; width: 210px;",
-            "quotation_reference": "top: 136px; right: 110px; width: 240px;",
-            "quotation_company_name": "top: 210px; left: 96px; width: 520px;",
-            "quotation_attention_name": "top: 250px; left: 96px; width: 420px;",
-            "quotation_subject": "top: 288px; left: 96px; width: 620px;",
-            "quotation_customer_address": "top: 324px; left: 96px; width: 640px; height: 90px;",
-            "quotation_salutation": "top: 436px; left: 96px; width: 320px;",
-            "quotation_introduction": "top: 468px; left: 96px; width: 820px; height: 120px;",
-            "quotation_closing": "top: 986px; left: 96px; width: 360px;",
-        }
-
-        _overlay_slot(
+_overlay_slot(
             "Date",
             key="quotation_date",
             placeholder="Date",
@@ -8234,11 +8246,6 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             placeholder="With Thanks & Kind Regards",
             style=header_positions["quotation_closing"],
         )
-
-        table_top = 610
-        table_left = 70
-        table_width = 840
-        row_height = 58
 
         for idx, row in enumerate(items_rows):
             row_container = st.container()
@@ -8337,6 +8344,8 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                     "discount": discount,
                 }
             )
+
+        overlay_canvas.markdown("</div>", unsafe_allow_html=True)
 
     if removed_any and not updated_rows:
         updated_rows = _default_quotation_items()
