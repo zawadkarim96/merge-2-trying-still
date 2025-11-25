@@ -8050,10 +8050,12 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                 label_visibility="collapsed",
             )
 
-    overlay_card.markdown(
+    overlay_canvas = overlay_card.container()
+
+    overlay_canvas.markdown(
         f"""
         <style>
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) {{
             position: relative;
             border: 1px solid #e2e8f0;
             border-radius: 16px;
@@ -8064,7 +8066,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             aspect-ratio: 210 / 297;
             background: #f8fafc;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"])::before {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"])::before {{
             content: "";
             position: absolute;
             inset: 0;
@@ -8074,27 +8076,27 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             background-position: center top;
             z-index: 0;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"])::after {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"])::after {{
             content: "";
             position: absolute;
             inset: 0;
             background: linear-gradient(180deg, rgba(248, 250, 252, 0.35) 0%, rgba(226, 232, 240, 0.2) 100%);
             z-index: 1;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"] {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"] {{
             margin: 0 !important;
             padding: 0 !important;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .letterhead-field {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .letterhead-field {{
             display: none;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field) {{
             position: absolute;
             z-index: 3;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextInput > div > input,
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .stDateInput input,
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextArea textarea {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextInput > div > input,
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stDateInput input,
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextArea textarea {{
             background: rgba(255, 255, 255, 0.35);
             border: 0;
             border-bottom: 1px dashed #94a3b8;
@@ -8104,63 +8106,63 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             font-size: 14px;
             color: #0f172a;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextInput > div > input:focus,
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .stDateInput input:focus,
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextArea textarea:focus {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextInput > div > input:focus,
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stDateInput input:focus,
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) .stTextArea textarea:focus {{
             border-color: #1e293b;
             outline: 1px solid #cbd5e1;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_date"]) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_date"]) {{
             top: 110px;
             right: 120px;
             width: 210px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_reference"]) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_reference"]) {{
             top: 155px;
             right: 120px;
             width: 260px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_company_name"]) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_company_name"]) {{
             top: 230px;
             left: 110px;
             width: 520px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_attention_name"]) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_attention_name"]) {{
             top: 270px;
             left: 110px;
             width: 420px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_subject"]) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_subject"]) {{
             top: 310px;
             left: 110px;
             width: 620px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_customer_address"]) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_customer_address"]) {{
             top: 350px;
             left: 110px;
             width: 620px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_customer_contact_name"]) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_customer_contact_name"]) {{
             top: 450px;
             left: 110px;
             width: 320px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_customer_contact"]) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_customer_contact"]) {{
             top: 480px;
             left: 110px;
             width: 320px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_salutation"]) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_salutation"]) {{
             top: 530px;
             left: 110px;
             width: 260px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_introduction"]) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_introduction"]) {{
             top: 570px;
             left: 110px;
             width: 820px;
           }}
-          div[data-testid="stVerticalBlock"]:has(> div.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(> .letterhead-field[data-field="quotation_closing"]) {{
+          div[data-testid="stVerticalBlock"]:has(.letterhead-surface[data-overlay-id="{overlay_id}"]) div[data-testid="stVerticalBlock"]:has(.letterhead-field[data-field="quotation_closing"]) {{
             bottom: 190px;
             left: 110px;
             width: 320px;
@@ -8171,8 +8173,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         unsafe_allow_html=True,
     )
 
-    with overlay_card:
-        st.markdown("#### Letterhead canvas")
+    with overlay_canvas:
         st.caption("Click directly on the letterhead to fill each field.")
         _overlay_slot("Date", key="quotation_date", placeholder="Date")
         _overlay_slot("Reference number", key="quotation_reference", placeholder="Reference")
