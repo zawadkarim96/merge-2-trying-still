@@ -1944,6 +1944,8 @@ def _default_quotation_items() -> list[dict[str, object]]:
     return [
         {
             "description": "",
+            "hsn": "",
+            "unit": "",
             "kva": "",
             "specs": "",
             "note": "",
@@ -8142,12 +8144,46 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                 st.session_state["quotation_item_rows"] = _default_quotation_items()
 
             items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
+            required_item_columns = [
+                "description",
+                "hsn",
+                "unit",
+                "quantity",
+                "rate",
+                "discount",
+            ]
+
             if not items_df_seed.empty:
-                items_df_seed = items_df_seed[
-                    ["description", "hsn", "unit", "quantity", "rate", "discount"]
-                ]
-            if items_df_seed.empty:
+                for column in required_item_columns:
+                    if column not in items_df_seed.columns:
+                        default_value: object = ""
+                        if column == "quantity":
+                            default_value = 1.0
+                        elif column in {"rate", "discount"}:
+                            default_value = 0.0
+                        items_df_seed[column] = default_value
+                items_df_seed = items_df_seed[required_item_columns]
+            else:
                 items_df_seed = pd.DataFrame(_default_quotation_items())
+
+            items_df_seed["description"] = items_df_seed["description"].fillna("")
+            items_df_seed["hsn"] = items_df_seed["hsn"].fillna("")
+            items_df_seed["unit"] = items_df_seed["unit"].fillna("")
+            items_df_seed["quantity"] = (
+                pd.to_numeric(items_df_seed["quantity"], errors="coerce")
+                .fillna(1.0)
+                .clip(lower=0)
+            )
+            items_df_seed["rate"] = (
+                pd.to_numeric(items_df_seed["rate"], errors="coerce")
+                .fillna(0.0)
+                .clip(lower=0)
+            )
+            items_df_seed["discount"] = (
+                pd.to_numeric(items_df_seed["discount"], errors="coerce")
+                .fillna(0.0)
+                .clip(lower=0)
+            )
 
             items_editor = st.data_editor(
                 items_df_seed,
