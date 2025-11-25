@@ -2044,8 +2044,8 @@ def parse_delivery_items_payload(value: Optional[str]) -> list[dict[str, object]
 def _reset_quotation_form_state() -> None:
     default_items = _default_quotation_items()
     st.session_state["quotation_item_rows"] = default_items
-    st.session_state["quotation_preview_item_rows"] = [dict(row) for row in default_items]
-    st.session_state["quotation_preview_items_dirty"] = False
+    st.session_state["quotation_preview_item_rows"] = []
+    st.session_state["quotation_preview_items_dirty"] = True
     st.session_state.pop("quotation_form_initialized", None)
     for key in [
         "quotation_reference",
@@ -7506,11 +7506,8 @@ def _render_quotation_section(conn):
 
     st.session_state.setdefault("quotation_item_rows", _default_quotation_items())
     st.session_state.setdefault("quotation_complete_item_rows", [])
-    st.session_state.setdefault(
-        "quotation_preview_item_rows",
-        [dict(row) for row in st.session_state["quotation_item_rows"]],
-    )
-    st.session_state.setdefault("quotation_preview_items_dirty", False)
+    st.session_state.setdefault("quotation_preview_item_rows", [])
+    st.session_state.setdefault("quotation_preview_items_dirty", True)
 
     user = get_current_user()
     salesperson_seed = clean_text(user.get("username")) or ""
@@ -7968,11 +7965,6 @@ def _render_quotation_section(conn):
                     [row for row in new_rows if _quotation_row_complete(row)],
                 )
 
-            if not st.session_state.get("quotation_preview_item_rows"):
-                st.session_state["quotation_preview_item_rows"] = [
-                    dict(row) for row in st.session_state.get("quotation_item_rows", [])
-                ]
-
             refresh_needed = st.session_state.get(
                 "quotation_preview_items_dirty", False
             )
@@ -8066,10 +8058,6 @@ def _render_quotation_section(conn):
                 _safe_rerun()
 
     preview_source = st.session_state.get("quotation_preview_item_rows") or []
-    if not preview_source and st.session_state.get("quotation_item_rows"):
-        preview_source = [
-            dict(row) for row in st.session_state.get("quotation_item_rows", [])
-        ]
     preview_dirty = st.session_state.get("quotation_preview_items_dirty", False)
     preview_rows = [
         row for row in preview_source if _quotation_row_complete(row)
