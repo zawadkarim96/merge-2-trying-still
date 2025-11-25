@@ -7998,24 +7998,7 @@ def _render_quotation_section(conn):
             if reset_items:
                 st.session_state["quotation_item_rows"] = _default_quotation_items()
 
-            editor_state = st.session_state.get("quotation_items_table")
-
-            def _as_items_df(raw_value: object) -> Optional[pd.DataFrame]:
-                if raw_value is None:
-                    return None
-                if isinstance(raw_value, pd.DataFrame):
-                    return raw_value.copy()
-                if isinstance(raw_value, Mapping) and "data" in raw_value:
-                    return pd.DataFrame(raw_value.get("data"))
-
-                try:
-                    return pd.DataFrame(raw_value)
-                except (TypeError, ValueError):
-                    return None
-
-            items_df_seed = _as_items_df(editor_state) or pd.DataFrame(
-                st.session_state["quotation_item_rows"]
-            )
+            items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
             if not items_df_seed.empty:
                 for legacy_col, new_col in (("hsn", "specs"), ("unit", "kva")):
                     if legacy_col in items_df_seed.columns and new_col not in items_df_seed.columns:
