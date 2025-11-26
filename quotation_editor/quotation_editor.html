@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Quotation Letterhead Editor</title>
+  <style>
+    :root {
+      --page-width: 900px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      background: #0b172a;
+      color: #0f172a;
+      display: flex;
+      gap: 16px;
+      padding: 16px;
+      justify-content: center;
+    }
+    .wrapper {
+      background: #e2e8f0;
+      padding: 16px;
+      border-radius: 14px;
+      box-shadow: 0 20px 60px rgba(15, 23, 42, 0.3);
+    }
+    .page {
+      position: relative;
+      width: var(--page-width);
+      min-height: 1200px;
+      background: #ffffff;
+      background-image: url('../ps_letterhead.png'), url('../letterhead.png');
+      background-repeat: no-repeat;
+      background-position: top center;
+      background-size: contain;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+    }
+    .page::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
+    }
+    .field {
+      position: absolute;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 13px;
+    }
+    .field label {
+      font-weight: 600;
+      color: #0f172a;
+      text-shadow: 0 1px 0 rgba(255, 255, 255, 0.6);
+    }
+    .field input,
+    .field textarea {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid rgba(15, 23, 42, 0.18);
+      background: rgba(255, 255, 255, 0.82);
+      font-size: 13px;
+      box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+      resize: none;
+    }
+    .field textarea { min-height: 90px; }
+    .toolbar {
+      width: 200px;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 16px;
+      border-radius: 12px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      height: fit-content;
+    }
+    .toolbar h2 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: 0.02em;
+    }
+    .toolbar button {
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 14px;
+      color: #0f172a;
+      background: #22d3ee;
+      box-shadow: 0 10px 24px rgba(34, 211, 238, 0.35);
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+    .toolbar button.secondary {
+      background: #a5b4fc;
+      box-shadow: 0 10px 24px rgba(165, 180, 252, 0.35);
+    }
+    .toolbar button:hover { transform: translateY(-1px); }
+    .toolbar .status {
+      font-size: 13px;
+      line-height: 1.4;
+      color: #cbd5e1;
+      min-height: 38px;
+    }
+    .field.date { top: 128px; left: 600px; width: 210px; }
+    .field.reference { top: 168px; left: 600px; width: 210px; }
+    .field.to { top: 206px; left: 82px; width: 460px; }
+    .field.attention { top: 242px; left: 82px; width: 480px; }
+    .field.subject { top: 280px; left: 82px; width: 640px; }
+    .field.address { top: 318px; left: 82px; width: 640px; }
+    .field.address textarea { min-height: 110px; }
+    .field.salutation { top: 446px; left: 82px; width: 360px; }
+    .field.introduction { top: 480px; left: 82px; width: 720px; }
+    .field.introduction textarea { min-height: 140px; }
+    .field.closing { top: 954px; left: 82px; width: 420px; }
+    .field.closing textarea { min-height: 120px; }
+    @media (max-width: 1200px) {
+      body { flex-direction: column; align-items: center; }
+      .toolbar { width: 100%; max-width: var(--page-width); flex-direction: row; flex-wrap: wrap; gap: 10px; }
+      .toolbar button { flex: 1 1 200px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <h2>Letterhead Editor</h2>
+    <button id="save-btn">Save to CRM</button>
+    <button id="pdf-btn" class="secondary">Download PDF</button>
+    <div class="status" id="status">Loading quotation...</div>
+  </div>
+  <div class="wrapper">
+    <div class="page">
+      <div class="field date">
+        <label for="date">Date</label>
+        <input type="date" id="date" />
+      </div>
+      <div class="field reference">
+        <label for="reference">Reference number</label>
+        <input type="text" id="reference" placeholder="Ref" />
+      </div>
+      <div class="field to">
+        <label for="customer_company">To / Customer company</label>
+        <input type="text" id="customer_company" placeholder="Customer company" />
+      </div>
+      <div class="field attention">
+        <label for="attention">Attention</label>
+        <input type="text" id="attention" placeholder="Attention name" />
+      </div>
+      <div class="field subject">
+        <label for="subject">Subject</label>
+        <input type="text" id="subject" placeholder="Subject" />
+      </div>
+      <div class="field address">
+        <label for="address">Customer address</label>
+        <textarea id="address" placeholder="Street, city, ZIP"></textarea>
+      </div>
+      <div class="field salutation">
+        <label for="salutation">Salutation</label>
+        <input type="text" id="salutation" placeholder="Dear Sir," />
+      </div>
+      <div class="field introduction">
+        <label for="introduction">Introduction</label>
+        <textarea id="introduction" placeholder="Intro text"></textarea>
+      </div>
+      <div class="field closing">
+        <label for="closing">Closing / thanks</label>
+        <textarea id="closing" placeholder="Closing"></textarea>
+      </div>
+    </div>
+  </div>
+  <script src="quotation_editor.js"></script>
+</body>
+</html>
