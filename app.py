@@ -1,9 +1,11 @@
 import contextlib
 import base64
 import html
+import http.server
 import io
 import json
 import math
+import threading
 import time
 from reportlab.lib.utils import ImageReader
 import os
@@ -14,8 +16,10 @@ import uuid
 import zipfile
 from calendar import monthrange
 from datetime import datetime, timedelta, date
+from functools import partial
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
+import urllib.parse
 
 from dotenv import load_dotenv
 from textwrap import dedent
@@ -53,6 +57,7 @@ DEFAULT_BASE_DIR = get_storage_dir()
 BASE_DIR = Path(os.getenv("APP_STORAGE_DIR", DEFAULT_BASE_DIR))
 BASE_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "ps_crm.db"))
+PROJECT_ROOT = Path(__file__).resolve().parent
 DATE_FMT = "%d-%m-%Y"
 CURRENCY_SYMBOL = os.getenv("APP_CURRENCY_SYMBOL", "৳")
 
@@ -65,6 +70,7 @@ SERVICE_BILL_DIR = UPLOADS_DIR / "service_bills"
 REPORT_DOCS_DIR = UPLOADS_DIR / "report_documents"
 QUOTATION_RECEIPT_DIR = UPLOADS_DIR / "quotation_receipts"
 DELIVERY_RECEIPT_DIR = UPLOADS_DIR / "delivery_receipts"
+QUOTATION_EDITOR_PORT = int(os.getenv("QUOTATION_EDITOR_PORT", "8502"))
 
 DEFAULT_QUOTATION_VALID_DAYS = 30
 
@@ -106,6 +112,9 @@ REPORT_GRID_FIELDS = OrderedDict(
 REPORT_GRID_DISPLAY_COLUMNS = [
     config["label"] for config in REPORT_GRID_FIELDS.values()
 ]
+
+_quotation_editor_server: Optional[http.server.ThreadingHTTPServer] = None
+_quotation_editor_thread: Optional[threading.Thread] = None
 
 
 def _default_report_grid_row() -> dict[str, object]:
@@ -1573,6 +1582,330 @@ def parse_quantity(value, *, default: int = 1) -> int:
     if not math.isfinite(qty) or qty <= 0:
         return default
     return max(1, int(round(qty)))
+
+
+def _format_editor_date(value: object) -> Optional[str]:
+    iso_date = to_iso_date(value)
+    if not iso_date:
+        return None
+    try:
+        return datetime.fromisoformat(iso_date).strftime(DATE_FMT)
+    except Exception:
+        return iso_date
+
+
+def _fetch_quotation_for_editor(conn, quotation_id: int) -> Optional[dict[str, object]]:
+    cursor = conn.execute(
+        dedent(
+            """
+            SELECT quotation_id, reference, quote_date, customer_name, customer_company,
+                   customer_address, customer_district, customer_contact, attention_name,
+                   attention_title, subject, salutation, introduction, closing, total_amount,
+                   discount_pct, document_path, letter_template, salesperson_name,
+                   salesperson_title, salesperson_contact, quote_type
+              FROM quotations
+             WHERE quotation_id=?
+            """
+        ),
+        (quotation_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    columns = [
+        "quotation_id",
+        "reference",
+        "quote_date",
+        "customer_name",
+        "customer_company",
+        "customer_address",
+        "customer_district",
+        "customer_contact",
+        "attention_name",
+        "attention_title",
+        "subject",
+        "salutation",
+        "introduction",
+        "closing",
+        "total_amount",
+        "discount_pct",
+        "document_path",
+        "letter_template",
+        "salesperson_name",
+        "salesperson_title",
+        "salesperson_contact",
+        "quote_type",
+    ]
+    return {col: row[idx] for idx, col in enumerate(columns)}
+
+
+def _apply_editor_payload(conn, quotation_id: int, payload: Mapping[str, object]) -> bool:
+    updates = {
+        "reference": clean_text(payload.get("reference")),
+        "quote_date": to_iso_date(payload.get("date")),
+        "customer_company": clean_text(payload.get("customer_company")),
+        "customer_name": clean_text(payload.get("customer_contact"))
+        or clean_text(payload.get("attention")),
+        "customer_address": clean_text(payload.get("address")),
+        "attention_name": clean_text(payload.get("attention")),
+        "subject": clean_text(payload.get("subject")),
+        "salutation": clean_text(payload.get("salutation")),
+        "introduction": clean_text(payload.get("introduction"))
+        if payload.get("introduction")
+        else None,
+        "closing": clean_text(payload.get("closing")) if payload.get("closing") else None,
+    }
+    set_parts: list[str] = []
+    values: list[object] = []
+    for column, value in updates.items():
+        set_parts.append(f"{column}=?")
+        values.append(value)
+
+    if not set_parts:
+        return False
+
+    values.append(quotation_id)
+    cursor = conn.execute(
+        f"UPDATE quotations SET {', '.join(set_parts)}, updated_at=datetime('now') WHERE quotation_id=?",
+        tuple(values),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+def _build_editor_metadata(
+    record: Mapping[str, object], payload: Mapping[str, object]
+) -> OrderedDict:
+    merged = dict(record)
+    merged.update(
+        {
+            "quote_date": to_iso_date(payload.get("date")) or merged.get("quote_date"),
+            "reference": clean_text(payload.get("reference")) or merged.get("reference"),
+            "customer_company": clean_text(payload.get("customer_company"))
+            or merged.get("customer_company"),
+            "customer_address": payload.get("address") or merged.get("customer_address"),
+            "customer_name": clean_text(payload.get("customer_contact"))
+            or clean_text(payload.get("attention"))
+            or merged.get("customer_name"),
+            "attention_name": clean_text(payload.get("attention")) or merged.get("attention_name"),
+            "subject": clean_text(payload.get("subject")) or merged.get("subject"),
+            "salutation": clean_text(payload.get("salutation")) or merged.get("salutation"),
+            "introduction": payload.get("introduction") or merged.get("introduction"),
+            "closing": payload.get("closing") or merged.get("closing"),
+        }
+    )
+
+    metadata = OrderedDict()
+    metadata["Reference number"] = merged.get("reference")
+    metadata["Date"] = _format_editor_date(merged.get("quote_date"))
+    metadata["Customer contact name"] = merged.get("customer_name")
+    metadata["Customer company"] = merged.get("customer_company")
+    metadata["Customer address"] = merged.get("customer_address")
+    metadata["Customer district"] = merged.get("customer_district")
+    metadata["Customer contact"] = merged.get("customer_contact")
+    metadata["Attention name"] = merged.get("attention_name")
+    metadata["Attention title"] = merged.get("attention_title")
+    metadata["Subject"] = merged.get("subject")
+    metadata["Salutation"] = merged.get("salutation") or "Dear Sir,"
+    metadata["Introduction"] = merged.get("introduction")
+    metadata["Quote type"] = merged.get("quote_type") or "Quotation"
+    metadata["Closing / thanks"] = merged.get("closing")
+    metadata["Salesperson name"] = merged.get("salesperson_name")
+    metadata["Salesperson title"] = merged.get("salesperson_title")
+    metadata["Salesperson contact"] = merged.get("salesperson_contact")
+    return metadata
+
+
+def _generate_editor_pdf(
+    quotation_id: int, payload: Mapping[str, object]
+) -> Optional[bytes]:
+    conn = get_conn()
+    try:
+        record = _fetch_quotation_for_editor(conn, quotation_id)
+    finally:
+        conn.close()
+
+    if not record:
+        return None
+
+    metadata = _build_editor_metadata(record, payload)
+    grand_total = _coerce_float(
+        payload.get("total_amount") or record.get("total_amount"), 0.0
+    )
+    totals = {
+        "grand_total": grand_total,
+        "discount_total": 0.0,
+        "gross_total": grand_total,
+    }
+    grand_total_label = format_money(grand_total) or f"{grand_total:,.2f}"
+    grand_total_words = format_amount_in_words(grand_total)
+    template_choice = clean_text(record.get("letter_template")) or "PS letterhead"
+
+    return _build_quotation_pdf(
+        metadata=metadata,
+        items=[],
+        totals=totals,
+        grand_total_label=grand_total_label,
+        template_choice=template_choice,
+        grand_total_words=grand_total_words,
+    )
+
+
+class _QuotationEditorRequestHandler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, directory: str | None = None, **kwargs):  # type: ignore[override]
+        super().__init__(*args, directory=directory, **kwargs)
+
+    def log_message(self, format: str, *args):  # pragma: no cover - reduce noise
+        return
+
+    def _parse_quotation_id(self, path_parts: list[str]) -> Optional[int]:
+        if len(path_parts) < 3:
+            return None
+        try:
+            quotation_id = int(path_parts[2])
+        except (TypeError, ValueError):
+            return None
+        return quotation_id if quotation_id > 0 else None
+
+    def _send_json(self, status: int, payload: Mapping[str, object]):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json(self) -> Optional[dict[str, object]]:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        data = self.rfile.read(length) if length > 0 else b""
+        if not data:
+            return None
+        try:
+            parsed = json.loads(data.decode("utf-8"))
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+        return None
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_GET(self):  # noqa: N802 - following BaseHTTPRequestHandler signature
+        parsed = urllib.parse.urlparse(self.path)
+        path_parts = parsed.path.strip("/").split("/")
+        if len(path_parts) >= 2 and path_parts[0] == "api" and path_parts[1] == "quotation":
+            quotation_id = self._parse_quotation_id(path_parts)
+            if quotation_id is None:
+                self._send_json(400, {"error": "Invalid quotation ID"})
+                return
+
+            conn = get_conn()
+            try:
+                record = _fetch_quotation_for_editor(conn, quotation_id)
+            finally:
+                conn.close()
+
+            if not record:
+                self._send_json(404, {"error": "Quotation not found"})
+                return
+
+            payload = {
+                "quotation_id": quotation_id,
+                "date": to_iso_date(record.get("quote_date")),
+                "reference": clean_text(record.get("reference")) or "",
+                "customer_company": clean_text(record.get("customer_company")) or "",
+                "attention": clean_text(record.get("attention_name")) or "",
+                "subject": clean_text(record.get("subject")) or "",
+                "address": record.get("customer_address") or "",
+                "salutation": clean_text(record.get("salutation")) or "Dear Sir,",
+                "introduction": record.get("introduction") or "",
+                "closing": record.get("closing") or "",
+                "customer_contact": clean_text(record.get("customer_name")) or "",
+            }
+            self._send_json(200, payload)
+            return
+
+        return super().do_GET()
+
+    def do_POST(self):  # noqa: N802 - following BaseHTTPRequestHandler signature
+        parsed = urllib.parse.urlparse(self.path)
+        path_parts = parsed.path.strip("/").split("/")
+        if len(path_parts) >= 3 and path_parts[0] == "api" and path_parts[1] == "quotation":
+            quotation_id = self._parse_quotation_id(path_parts)
+            if quotation_id is None:
+                self._send_json(400, {"error": "Invalid quotation ID"})
+                return
+
+            payload = self._read_json() or {}
+            if len(path_parts) >= 4 and path_parts[3] == "save":
+                conn = get_conn()
+                try:
+                    updated = _apply_editor_payload(conn, quotation_id, payload)
+                finally:
+                    conn.close()
+
+                if not updated:
+                    self._send_json(404, {"error": "Quotation not found or unchanged"})
+                    return
+                self._send_json(200, {"status": "ok", "quotation_id": quotation_id})
+                return
+
+            if len(path_parts) >= 4 and path_parts[3] == "pdf":
+                conn = get_conn()
+                try:
+                    _apply_editor_payload(conn, quotation_id, payload)
+                finally:
+                    conn.close()
+
+                pdf_bytes = _generate_editor_pdf(quotation_id, payload)
+                if not pdf_bytes:
+                    self._send_json(404, {"error": "Quotation not found"})
+                    return
+
+                filename = f"quotation_{quotation_id}.pdf"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/pdf")
+                self.send_header(
+                    "Content-Disposition", f"attachment; filename={filename}"
+                )
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(pdf_bytes)))
+                self.end_headers()
+                self.wfile.write(pdf_bytes)
+                return
+
+        self._send_json(404, {"error": "Unsupported endpoint"})
+
+
+def _ensure_quotation_editor_server():
+    global _quotation_editor_server, _quotation_editor_thread
+    if _quotation_editor_server is not None:
+        return
+
+    try:
+        handler_cls = partial(
+            _QuotationEditorRequestHandler, directory=str(PROJECT_ROOT.resolve())
+        )
+        server = http.server.ThreadingHTTPServer(
+            ("0.0.0.0", QUOTATION_EDITOR_PORT), handler_cls
+        )
+    except OSError:
+        return
+
+    _quotation_editor_server = server
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    _quotation_editor_thread = thread
 
 
 def format_period_label(period_type: str) -> str:
@@ -8499,6 +8832,20 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             or st.session_state.get("quotation_letter_template"),
         )
 
+        record_id = result.get("record_id")
+        if record_id:
+            editor_button = dedent(
+                f"""
+                <div style="margin: 0.5rem 0 1rem 0;">
+                  <a onclick="const port={QUOTATION_EDITOR_PORT}; const url=`${{location.protocol}}//${{location.hostname}}:${{port}}/quotation_editor/quotation_editor.html?quotation_id={record_id}`; window.open(url, '_blank'); return false;"
+                     style="display:inline-block; background:#0f766e; color:white; padding:10px 14px; border-radius:8px; font-weight:600; text-decoration:none;">
+                    Open letterhead editor
+                  </a>
+                </div>
+                """
+            )
+            st.markdown(editor_button, unsafe_allow_html=True)
+
         st.download_button(
             "Download quotation",
             data=result["excel_bytes"],
@@ -13103,6 +13450,7 @@ def main():
     st.session_state["_render_id"] = st.session_state.get("_render_id", 0) + 1
     render_id = st.session_state["_render_id"]
     init_ui()
+    _ensure_quotation_editor_server()
     conn = get_conn()
     init_schema(conn)
     login_box(conn, render_id=render_id)
