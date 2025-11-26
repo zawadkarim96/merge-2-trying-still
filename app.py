@@ -7884,7 +7884,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             else "background-color: #f8fafc;"
         )
         overlay_root = (
-            f"div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-overlay-marker-{render_id})"
+            f"div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-wrapper-{render_id})"
         )
         overlay = st.container()
         overlay.markdown(
@@ -7903,6 +7903,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
                   overflow: hidden;
                   min-height: 1100px;
+                  isolation: isolate;
               }}
               {overlay_root} > div {{
                   margin: 0 !important;
@@ -7992,12 +7993,6 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
               {overlay_root} .intro-field-{render_id} + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
                   min-height: 120px;
               }}
-              {overlay_root} .table-field-{render_id},
-              {overlay_root} .table-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-                  top: 610px;
-                  left: 70px;
-                  width: 720px;
-              }}
               {overlay_root} .closing-field-{render_id},
               {overlay_root} .closing-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
                   top: 940px;
@@ -8005,7 +8000,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                   width: 360px;
               }}
             </style>
-            <div class="letterhead-overlay-marker-{render_id}"></div>
+            <div class="letterhead-overlay-marker-{render_id} letterhead-wrapper-{render_id}"></div>
             """,
             unsafe_allow_html=True,
         )
@@ -8125,105 +8120,6 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             )
 
         overlay.markdown(
-            f'<div class="field-anchor table-field-{render_id}"></div>',
-            unsafe_allow_html=True,
-        )
-        with overlay.container():
-            items_toolbar = st.columns(3)
-            with items_toolbar[0]:
-                add_item = st.form_submit_button("Add item", use_container_width=True)
-            with items_toolbar[1]:
-                clear_items = st.form_submit_button("Clear items", use_container_width=True)
-            with items_toolbar[2]:
-                reset_items = st.form_submit_button("Reset defaults", use_container_width=True)
-            if add_item:
-                st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
-            if clear_items:
-                st.session_state["quotation_item_rows"] = []
-            if reset_items:
-                st.session_state["quotation_item_rows"] = _default_quotation_items()
-
-            items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
-            required_item_columns = [
-                "description",
-                "hsn",
-                "unit",
-                "quantity",
-                "rate",
-                "discount",
-            ]
-
-            if not items_df_seed.empty:
-                for column in required_item_columns:
-                    if column not in items_df_seed.columns:
-                        default_value: object = ""
-                        if column == "quantity":
-                            default_value = 1.0
-                        elif column in {"rate", "discount"}:
-                            default_value = 0.0
-                        items_df_seed[column] = default_value
-                items_df_seed = items_df_seed[required_item_columns]
-            else:
-                items_df_seed = pd.DataFrame(_default_quotation_items())
-
-            items_df_seed["description"] = items_df_seed["description"].fillna("")
-            items_df_seed["hsn"] = items_df_seed["hsn"].fillna("")
-            items_df_seed["unit"] = items_df_seed["unit"].fillna("")
-            items_df_seed["quantity"] = (
-                pd.to_numeric(items_df_seed["quantity"], errors="coerce")
-                .fillna(1.0)
-                .clip(lower=0)
-            )
-            items_df_seed["rate"] = (
-                pd.to_numeric(items_df_seed["rate"], errors="coerce")
-                .fillna(0.0)
-                .clip(lower=0)
-            )
-            items_df_seed["discount"] = (
-                pd.to_numeric(items_df_seed["discount"], errors="coerce")
-                .fillna(0.0)
-                .clip(lower=0)
-            )
-
-            items_editor = st.data_editor(
-                items_df_seed,
-                num_rows="dynamic",
-                hide_index=True,
-                key="quotation_items_table",
-                use_container_width=True,
-                column_config={
-                    "description": st.column_config.TextColumn(
-                        "Tracked products",
-                        help="Describe the item or service",
-                    ),
-                    "hsn": st.column_config.TextColumn(
-                        "HSN/SAC", help="HSN/SAC code, if applicable"
-                    ),
-                    "unit": st.column_config.TextColumn("Unit"),
-                    "quantity": st.column_config.NumberColumn(
-                        "Quantity",
-                        min_value=0.0,
-                        step=1.0,
-                        format="%.2f",
-                    ),
-                    "rate": st.column_config.NumberColumn(
-                        "Rate",
-                        min_value=0.0,
-                        step=100.0,
-                        format="%.2f",
-                    ),
-                    "discount": st.column_config.NumberColumn(
-                        "Discount (%)",
-                        help="Discount percentage for this line item",
-                        min_value=0.0,
-                        max_value=100.0,
-                        step=0.5,
-                        format="%.2f",
-                    ),
-                },
-            )
-
-        overlay.markdown(
             f'<div class="field-anchor closing-field-{render_id}"></div>',
             unsafe_allow_html=True,
         )
@@ -8234,6 +8130,102 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                 key="quotation_closing",
                 label_visibility="collapsed",
             )
+
+        st.divider()
+
+        items_toolbar = st.columns(3)
+        with items_toolbar[0]:
+            add_item = st.form_submit_button("Add item", use_container_width=True)
+        with items_toolbar[1]:
+            clear_items = st.form_submit_button("Clear items", use_container_width=True)
+        with items_toolbar[2]:
+            reset_items = st.form_submit_button("Reset defaults", use_container_width=True)
+        if add_item:
+            st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
+        if clear_items:
+            st.session_state["quotation_item_rows"] = []
+        if reset_items:
+            st.session_state["quotation_item_rows"] = _default_quotation_items()
+
+        items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
+        required_item_columns = [
+            "description",
+            "hsn",
+            "unit",
+            "quantity",
+            "rate",
+            "discount",
+        ]
+
+        if not items_df_seed.empty:
+            for column in required_item_columns:
+                if column not in items_df_seed.columns:
+                    default_value: object = ""
+                    if column == "quantity":
+                        default_value = 1.0
+                    elif column in {"rate", "discount"}:
+                        default_value = 0.0
+                    items_df_seed[column] = default_value
+            items_df_seed = items_df_seed[required_item_columns]
+        else:
+            items_df_seed = pd.DataFrame(_default_quotation_items())
+
+        items_df_seed["description"] = items_df_seed["description"].fillna("")
+        items_df_seed["hsn"] = items_df_seed["hsn"].fillna("")
+        items_df_seed["unit"] = items_df_seed["unit"].fillna("")
+        items_df_seed["quantity"] = (
+            pd.to_numeric(items_df_seed["quantity"], errors="coerce")
+            .fillna(1.0)
+            .clip(lower=0)
+        )
+        items_df_seed["rate"] = (
+            pd.to_numeric(items_df_seed["rate"], errors="coerce")
+            .fillna(0.0)
+            .clip(lower=0)
+        )
+        items_df_seed["discount"] = (
+            pd.to_numeric(items_df_seed["discount"], errors="coerce")
+            .fillna(0.0)
+            .clip(lower=0)
+        )
+
+        items_editor = st.data_editor(
+            items_df_seed,
+            num_rows="dynamic",
+            hide_index=True,
+            key="quotation_items_table",
+            use_container_width=True,
+            column_config={
+                "description": st.column_config.TextColumn(
+                    "Tracked products",
+                    help="Describe the item or service",
+                ),
+                "hsn": st.column_config.TextColumn(
+                    "HSN/SAC", help="HSN/SAC code, if applicable"
+                ),
+                "unit": st.column_config.TextColumn("Unit"),
+                "quantity": st.column_config.NumberColumn(
+                    "Quantity",
+                    min_value=0.0,
+                    step=1.0,
+                    format="%.2f",
+                ),
+                "rate": st.column_config.NumberColumn(
+                    "Rate",
+                    min_value=0.0,
+                    step=100.0,
+                    format="%.2f",
+                ),
+                "discount": st.column_config.NumberColumn(
+                    "Discount (%)",
+                    help="Discount percentage for this line item",
+                    min_value=0.0,
+                    max_value=100.0,
+                    step=0.5,
+                    format="%.2f",
+                ),
+            },
+        )
 
         settings_cols = st.columns(2)
         with settings_cols[0]:
