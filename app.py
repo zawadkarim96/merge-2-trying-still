@@ -24,6 +24,8 @@ import urllib.parse
 from dotenv import load_dotenv
 from textwrap import dedent
 import pandas as pd
+from PIL import Image, ImageOps, ImageEnhance
+from pypdf import PdfReader
 
 from openpyxl import load_workbook
 
@@ -1105,6 +1107,178 @@ def clean_text(value):
         pass
     value = str(value).strip()
     return value or None
+
+
+def _extract_text_from_quotation_upload(upload) -> tuple[str, list[str]]:
+    """Return extracted text and warnings from an uploaded quotation file."""
+
+    warnings: list[str] = []
+    text_content = ""
+    suffix = Path(upload.name).suffix.lower()
+    file_bytes = upload.getvalue()
+
+    def _ocr_image(image: Image.Image) -> str:
+        try:
+            import pytesseract
+        except Exception:  # pragma: no cover - optional dependency
+            warnings.append(
+                "Install pytesseract and Tesseract OCR to read text from images."
+            )
+            return ""
+
+        try:
+            grayscale = ImageOps.grayscale(image)
+            enhanced = ImageEnhance.Contrast(grayscale).enhance(1.8)
+            return pytesseract.image_to_string(enhanced)
+        except Exception as exc:  # pragma: no cover - defensive against OCR failures
+            warnings.append(f"OCR failed: {exc}")
+            return ""
+
+    if suffix == ".pdf":
+        try:
+            reader = PdfReader(io.BytesIO(file_bytes))
+            pages: list[str] = []
+            for page in reader.pages:
+                try:
+                    pages.append(page.extract_text() or "")
+                except Exception:
+                    continue
+                if not pages[-1].strip():
+                    for image_file in getattr(page, "images", []):
+                        try:
+                            pil_image = Image.open(io.BytesIO(image_file.data))
+                            pages[-1] += "\n" + _ocr_image(pil_image)
+                        except Exception:
+                            continue
+            text_content = "\n".join(pages)
+            if not text_content.strip():
+                warnings.append("No readable text found in the uploaded PDF.")
+        except Exception as exc:  # pragma: no cover - defensive against damaged uploads
+            warnings.append(f"Could not read PDF: {exc}")
+    else:
+        try:
+            image = Image.open(io.BytesIO(file_bytes))
+        except Exception as exc:  # pragma: no cover - defensive against damaged uploads
+            warnings.append(f"Could not open the uploaded image: {exc}")
+            return "", warnings
+
+        text_content = _ocr_image(image)
+
+    return text_content, warnings
+
+
+def _parse_date_from_text(value: str) -> Optional[date]:
+    cleaned = clean_text(value)
+    if not cleaned:
+        return None
+    cleaned = cleaned.replace(".", "-").replace("/", "-")
+    candidates = re.findall(r"\d{1,2}-\d{1,2}-\d{2,4}", cleaned)
+    if not candidates:
+        return None
+    for candidate in candidates:
+        for fmt in ["%d-%m-%Y", "%d-%m-%y", "%Y-%m-%d"]:
+            try:
+                return datetime.strptime(candidate, fmt).date()
+            except ValueError:
+                continue
+    return None
+
+
+def _extract_quotation_metadata(text: str) -> dict[str, object]:
+    """Detect useful fields from uploaded quotation text."""
+
+    if not text:
+        return {}
+
+    normalized = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+    updates: dict[str, object] = {}
+
+    def _match(patterns: Iterable[str]) -> Optional[str]:
+        for pattern in patterns:
+            match = re.search(pattern, normalized, re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+        return None
+
+    reference = _match(
+        [
+            r"quotation\s*(?:no\.|number|#)[:#\s]*([\w/-]+)",
+            r"quote\s*(?:no\.|number|#)[:#\s]*([\w/-]+)",
+            r"reference[:#\s]*([\w/-]+)",
+            r"ref[:#\s]*([\w/-]+)",
+        ]
+    )
+    if reference:
+        updates["quotation_reference"] = reference
+
+    subject_line = _match([r"subject[:\s]*([^\n]+)"])
+    if subject_line:
+        updates["quotation_subject"] = subject_line
+
+    attention = _match(
+        [
+            r"attn\.?[:\s]*([^\n]+)",
+            r"attention[:\s]*([^\n]+)",
+            r"dear\s+([^\n,]+)",
+        ]
+    )
+    if attention:
+        updates["quotation_attention_name"] = attention
+
+    company = _match(
+        [
+            r"company[:\s]*([^\n]+)",
+            r"to[:\s]*([^\n]+)",
+            r"for[:\s]*([^\n]+)",
+        ]
+    )
+    if company:
+        updates["quotation_company_name"] = company
+
+    phone = _match([r"(?:phone|tel|mobile)[:\s]*([+\d][\d\s\-()]+)"])
+    if phone:
+        updates["quotation_customer_contact"] = phone
+
+    email = _match([r"email[:\s]*([^\n\s]+@[^\n\s]+)"])
+    if email:
+        existing = updates.get("quotation_customer_contact")
+        updates["quotation_customer_contact"] = (
+            f"{existing}, {email}" if existing else email
+        )
+
+    address = _match([r"address[:\s]*([^\n]+(?:\n[^\n]+){0,2})"])
+    if address:
+        updates["quotation_customer_address"] = address.replace("\n", " ")
+
+    detected_date = _match(
+        [
+            r"date[:\s]*([\d./\-]+)",
+            r"valid\s*(?:until|till|up to)[:\s]*([\d./\-]+)",
+        ]
+    )
+    parsed_date = _parse_date_from_text(detected_date) if detected_date else None
+    if parsed_date:
+        updates["quotation_date"] = parsed_date
+
+    total_matches = re.findall(
+        r"(?:grand\s*total|total\s*amount|sub\s*total|total)[^\d]{0,10}([\d,.]+)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    parsed_totals: list[float] = []
+    for raw in total_matches:
+        cleaned = raw.replace(",", "")
+        try:
+            parsed_totals.append(float(cleaned))
+        except ValueError:
+            continue
+    if parsed_totals:
+        best_total = max(parsed_totals)
+        updates["quotation_admin_notes"] = (
+            f"Detected total from upload: {best_total:,.2f}"
+        )
+
+    return updates
 
 
 def _parse_sqlite_timestamp(value: Optional[str]) -> Optional[datetime]:
@@ -4035,9 +4209,9 @@ def dashboard(conn):
         st.session_state.page = "Delivery Orders"
         st.session_state["nav_page"] = "Delivery Orders"
         _safe_rerun()
-    if quick_links[2].button("Create quotation", key="dashboard_create_quotation_link"):
-        st.session_state.page = "Create Quotation"
-        st.session_state["nav_page"] = "Create Quotation"
+    if quick_links[2].button("Quotation", key="dashboard_create_quotation_link"):
+        st.session_state.page = "Quotation"
+        st.session_state["nav_page"] = "Quotation"
         _safe_rerun()
     user = st.session_state.user or {}
     is_admin = user.get("role") == "admin"
@@ -8204,6 +8378,57 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                 key="quotation_autofill_customer",
             )
 
+        upload_cols = st.columns(2)
+        with upload_cols[0]:
+            uploaded_quote = st.file_uploader(
+                "Upload quotation (PDF or image)",
+                type=["pdf", "png", "jpg", "jpeg"],
+                key="quotation_upload",
+                help="We will scan the file and populate matching fields automatically.",
+            )
+        with upload_cols[1]:
+            st.caption(
+                "Uploads can auto-fill the reference, date, customer details, and totals when detected."
+            )
+
+        upload_signature = None
+        if uploaded_quote is not None:
+            upload_signature = (
+                uploaded_quote.name,
+                uploaded_quote.size,
+                uploaded_quote.type,
+            )
+        last_signature = st.session_state.get("quotation_last_upload_signature")
+        if upload_signature and upload_signature != last_signature:
+            text_content, warnings = _extract_text_from_quotation_upload(uploaded_quote)
+            metadata = _extract_quotation_metadata(text_content)
+            applied = []
+            label_map = {
+                "quotation_reference": "Reference",
+                "quotation_subject": "Subject",
+                "quotation_attention_name": "Attention",
+                "quotation_company_name": "Company",
+                "quotation_customer_contact": "Phone",
+                "quotation_customer_address": "Address",
+                "quotation_date": "Date",
+                "quotation_admin_notes": "Admin notes",
+            }
+            for key, value in metadata.items():
+                if key == "quotation_admin_notes" or not st.session_state.get(key):
+                    st.session_state[key] = value
+                    applied.append(label_map.get(key, key))
+            st.session_state["quotation_last_upload_signature"] = upload_signature
+            if applied:
+                st.success(
+                    f"Uploaded quotation detected and auto-filled: {', '.join(sorted(applied))}."
+                )
+            else:
+                st.info("Upload processed but no new fields were detected to fill.")
+            for warning in warnings:
+                st.warning(warning)
+        elif upload_signature:
+            st.caption("Using details from your uploaded quotation.")
+
         resolved_render_id = render_id or st.session_state.get("quotation_overlay_render_id")
         if not resolved_render_id:
             resolved_render_id = int(time.time())
@@ -8645,7 +8870,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
 
         action_cols = st.columns([1, 1])
         reset = action_cols[1].form_submit_button("Reset form")
-        submit = action_cols[0].form_submit_button("Create quotation", type="primary")
+        submit = action_cols[0].form_submit_button("Save quotation", type="primary")
 
         if reset:
             _reset_quotation_form_state()
@@ -10425,7 +10650,7 @@ def delivery_orders_page(
 
 
 def quotation_page(conn, *, render_id: Optional[int] = None):
-    st.subheader("🧾 Create quotation")
+    st.subheader("🧾 Quotation")
     _render_quotation_section(conn, render_id=render_id)
     st.markdown("---")
     _render_quotation_management(conn)
@@ -10447,7 +10672,7 @@ def service_maintenance_page(conn):
         st.markdown("### Maintenance records")
         _render_maintenance_section(conn, show_heading=False)
     st.markdown("---")
-    st.info("Create new quotations from the dedicated 'Create Quotation' page in the sidebar.")
+    st.info("Create new quotations from the dedicated 'Quotation' page in the sidebar.")
 
 
 def customer_summary_page(conn):
@@ -13463,7 +13688,7 @@ def main():
     with st.sidebar:
         st.markdown("### Navigation")
         create_quote = st.button(
-            "🧾 Create Quotation", type="primary", use_container_width=True
+            "🧾 Quotation", type="primary", use_container_width=True
         )
         if role == "admin":
             pages = [
@@ -13501,7 +13726,7 @@ def main():
 
         if "nav_page" not in st.session_state:
             st.session_state["nav_page"] = st.session_state.get("page", pages[0])
-        if st.session_state.get("nav_page") not in pages + ["Create Quotation"]:
+        if st.session_state.get("nav_page") not in pages + ["Quotation"]:
             st.session_state["nav_page"] = pages[0]
 
         previous_choice = st.session_state.get(
@@ -13520,8 +13745,8 @@ def main():
         st.session_state["_nav_previous_choice"] = page_choice
 
         if create_quote:
-            st.session_state["nav_page"] = "Create Quotation"
-            st.session_state["_nav_locked_page"] = "Create Quotation"
+            st.session_state["nav_page"] = "Quotation"
+            st.session_state["_nav_locked_page"] = "Quotation"
         elif selection_changed:
             st.session_state["nav_page"] = page_choice
             st.session_state.pop("_nav_locked_page", None)
@@ -13541,7 +13766,7 @@ def main():
         work_done_page(conn)
     elif page == "Delivery Orders":
         delivery_orders_page(conn)
-    elif page == "Create Quotation":
+    elif page == "Quotation":
         quotation_page(conn, render_id=render_id)
     elif page == "Customers":
         customers_page(conn)
