@@ -2378,29 +2378,32 @@ def normalize_quotation_items(
         gross_amount = quantity * rate
         discount_amount = gross_amount * (discount_pct / 100.0)
         taxable_value = max(gross_amount - discount_amount, 0.0)
-        line_total = taxable_value
+        override_total = _coerce_float(entry.get("total_price"), None)
+        line_total = (
+            override_total
+            if override_total is not None and override_total >= 0
+            else taxable_value
+        )
 
         description_label = dedupe_join([description, model], " – ") or description
 
         item = {
-            "Item": len(cleaned) + 1,
-            "Description": description_label,
-            "kVA": kva,
-            "Specs": specs,
-            "Note": note,
+            "Sl No.": len(cleaned) + 1,
+            "Description of Generator": description_label,
             "Quantity": quantity,
-            "Rate": rate,
-            "Gross amount": gross_amount,
-            "Discount (%)": discount_pct,
-            "Discount amount": discount_amount,
-            "Taxable value": taxable_value,
-            "Line total": line_total,
+            "Qty.": quantity,
+            "Unit Price, Tk.": rate,
+            "Total Price, Tk.": line_total,
         }
+        if note:
+            item["Notes"] = note
+        if specs:
+            item["Specs"] = specs
         cleaned.append(item)
 
-        totals["gross_total"] += gross_amount
+        totals["gross_total"] += line_total
         totals["discount_total"] += discount_amount
-        totals["taxable_total"] += taxable_value
+        totals["taxable_total"] += line_total
         totals["grand_total"] += line_total
 
     return cleaned, totals
@@ -2624,6 +2627,7 @@ def _default_quotation_items() -> list[dict[str, object]]:
             "description": "",
             "quantity": 1.0,
             "rate": 0.0,
+            "total_price": 0.0,
         }
     ]
 
@@ -2739,6 +2743,7 @@ def _reset_quotation_form_state() -> None:
         "quotation_reminder_label",
         "quotation_customer_contact_name",
         "quotation_receipt_upload",
+        "quotation_manual_total",
     ]:
         st.session_state.pop(key, None)
     st.session_state.pop("quotation_result", None)
@@ -3107,7 +3112,7 @@ def bundle_documents_zip(documents):
     return buffer
 
 
-def dedupe_join(values: Iterable[Optional[str]]) -> str:
+def dedupe_join(values: Iterable[Optional[str]], joiner: str = ", ") -> str:
     seen = []
     for value in values:
         if value is None:
@@ -3117,7 +3122,7 @@ def dedupe_join(values: Iterable[Optional[str]]) -> str:
             continue
         if val not in seen:
             seen.append(val)
-    return ", ".join(seen)
+    return joiner.join(seen)
 
 
 def join_with_counts(values: Iterable[Optional[str]]) -> str:
@@ -7755,12 +7760,32 @@ def _regenerate_quotation_pdf_from_workbook(file_path: Path) -> Optional[bytes]:
 
     totals = {
         "gross_total": _total_from_label("gross amount")
-        or sum(_coerce_float(item.get("Gross amount"), 0.0) for item in items),
+        or _total_from_label("manual total override")
+        or sum(
+            _coerce_float(
+                item.get("Total Price, Tk.") or item.get("Gross amount"), 0.0
+            )
+            for item in items
+        ),
         "discount_total": _total_from_label("discount total")
         or sum(_coerce_float(item.get("Discount amount"), 0.0) for item in items),
-        "taxable_total": sum(_coerce_float(item.get("Taxable value"), 0.0) for item in items),
+        "taxable_total": sum(
+            _coerce_float(
+                item.get("Total Price, Tk.")
+                or item.get("Taxable value")
+                or item.get("Line total"),
+                0.0,
+            )
+            for item in items
+        ),
         "grand_total": _total_from_label("grand total")
-        or sum(_coerce_float(item.get("Line total"), 0.0) for item in items),
+        or _total_from_label("manual total override")
+        or sum(
+            _coerce_float(
+                item.get("Total Price, Tk.") or item.get("Line total"), 0.0
+            )
+            for item in items
+        ),
     }
 
     grand_total_label = format_money(totals["grand_total"]) or f"{totals['grand_total']:,.2f}"
@@ -7913,7 +7938,7 @@ def _build_quotation_pdf(
 
     address_lines = [customer_name, customer_contact, customer_contact_details, customer_address, customer_district]
     address_text = "<br/>".join(filter(None, address_lines)) or "—"
-    story.append(Paragraph("<b>To</b>", styles["BodySmall"]))
+    story.append(Paragraph("<b>Customer</b>", styles["BodySmall"]))
     story.append(Paragraph(address_text, styles["BodySmall"]))
     story.append(Spacer(1, 6))
     story.append(
@@ -7945,13 +7970,19 @@ def _build_quotation_pdf(
         description_parts = []
         description_parts.append(
             html.escape(
-                clean_text(item.get("Description"))
+                clean_text(item.get("Description of Generator"))
+                or clean_text(item.get("Description"))
                 or clean_text(item.get("description"))
                 or "Item"
             )
         )
         specs_text = clean_text(item.get("Specs")) or ""
-        note_text = clean_text(item.get("Note")) or clean_text(item.get("note")) or ""
+        note_text = (
+            clean_text(item.get("Notes"))
+            or clean_text(item.get("Note"))
+            or clean_text(item.get("note"))
+            or ""
+        )
         if specs_text:
             description_parts.append(
                 f"<font color='#475569'>{html.escape(specs_text)}</font>"
@@ -7961,9 +7992,23 @@ def _build_quotation_pdf(
                 f"<font color='#94a3b8' size='9'>{html.escape(note_text)}</font>"
             )
         description = "<br/>".join(filter(None, description_parts))
-        qty_value = _coerce_float(item.get("Quantity") or item.get("quantity"), 0.0)
-        rate_value = item.get("Rate") if "Rate" in item else item.get("unit_price")
-        line_total_value = item.get("Line total") if "Line total" in item else item.get("line_total")
+        qty_value = _coerce_float(
+            item.get("Qty.") or item.get("Quantity") or item.get("quantity"), 0.0
+        )
+        rate_value = (
+            item.get("Unit Price, Tk.")
+            if "Unit Price, Tk." in item
+            else item.get("Rate")
+            if "Rate" in item
+            else item.get("unit_price")
+        )
+        line_total_value = (
+            item.get("Total Price, Tk.")
+            if "Total Price, Tk." in item
+            else item.get("Line total")
+            if "Line total" in item
+            else item.get("line_total")
+        )
         table_data.append(
             [
                 str(idx),
@@ -8119,7 +8164,8 @@ def _render_letterhead_preview(
         item_total = 0.0
         for item in items:
             line_total = parse_amount(
-                item.get("Line total")
+                item.get("Total Price, Tk.")
+                or item.get("Line total")
                 or item.get("line_total")
                 or item.get("Amount")
             )
@@ -8139,6 +8185,8 @@ def _render_letterhead_preview(
         str(
             metadata.get("Customer company")
             or metadata.get("Customer / organisation")
+            or metadata.get("Hospital / customer")
+            or metadata.get("Customer")
             or ""
         )
     )
@@ -8172,13 +8220,25 @@ def _render_letterhead_preview(
     )
     rows_markup = []
     for idx, item in enumerate(line_items, start=1):
-        title = html.escape(clean_text(item.get("Description")) or "Item")
+        title = html.escape(
+            clean_text(item.get("Description of Generator"))
+            or clean_text(item.get("Description"))
+            or "Item"
+        )
         specs = html.escape(clean_text(item.get("Specs")) or "")
-        note = html.escape(clean_text(item.get("Note")) or clean_text(item.get("note")) or "")
-        qty = _coerce_float(item.get("Quantity"), 0.0)
+        note = html.escape(clean_text(item.get("Notes")) or clean_text(item.get("note")) or "")
+        qty = _coerce_float(item.get("Qty.") or item.get("Quantity"), 0.0)
         qty_display = f"{int(qty)}" if math.isclose(qty, round(qty)) else f"{qty:,.2f}"
-        rate_display = _format_currency(item.get("Rate"))
-        total_display = _format_currency(item.get("Line total"))
+        rate_display = _format_currency(
+            item.get("Unit Price, Tk.")
+            or item.get("Rate")
+            or item.get("unit_price")
+        )
+        total_display = _format_currency(
+            item.get("Total Price, Tk.")
+            or item.get("Line total")
+            or item.get("line_total")
+        )
         detail_lines = [title]
         if specs:
             detail_lines.append(f"<span style='color:#475569;'>{specs}</span>")
@@ -8235,7 +8295,7 @@ def _render_letterhead_preview(
                 <div><strong>Ref:</strong> {reference or '—'}</div>
               </div>
               <div style="margin-top: 12px; font-size: 13px; line-height: 1.6;">
-                <div><strong>To</strong></div>
+                <div><strong>Customer</strong></div>
                 <div>{address_block or '—'}</div>
               </div>
               <div style="margin-top: 8px; font-size: 13px;"><strong>Attention:</strong> {attention_name or '—'}</div>
@@ -8663,7 +8723,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                 key="quotation_date",
             )
             customer_company = st.text_input(
-                "Customer / Company name",
+                "Customer name",
                 value=st.session_state.get("quotation_company_name", ""),
                 key="quotation_company_name",
             )
@@ -8703,23 +8763,51 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
 
         st.markdown("### Product / service details")
         item_rows = st.session_state.get("quotation_item_rows") or _default_quotation_items()
-        items_df = st.data_editor(
-            pd.DataFrame(item_rows),
+        items_df = pd.DataFrame(item_rows)
+        for column in ["description", "quantity", "rate", "total_price"]:
+            if column not in items_df.columns:
+                default_value = 0.0 if column != "description" else ""
+                items_df[column] = default_value
+        items_df = items_df[["description", "quantity", "rate", "total_price"]]
+        edited_df = st.data_editor(
+            items_df,
             hide_index=True,
             num_rows="dynamic",
             use_container_width=True,
             key="quotation_items_editor",
             column_config={
-                "description": st.column_config.TextColumn("Description", required=True),
-                "model": st.column_config.TextColumn("Model / specs", default=""),
-                "quantity": st.column_config.NumberColumn("Quantity", min_value=0.0, step=1.0),
-                "rate": st.column_config.NumberColumn("Unit price", min_value=0.0, step=100.0),
-                "discount": st.column_config.NumberColumn("Discount (%)", min_value=0.0, max_value=100.0),
-                "note": st.column_config.TextColumn("Notes", default=""),
+                "description": st.column_config.TextColumn(
+                    "Description of Generator", required=True
+                ),
+                "quantity": st.column_config.NumberColumn(
+                    "Qty.", min_value=0.0, step=1.0, format="%d"
+                ),
+                "rate": st.column_config.NumberColumn(
+                    "Unit Price, Tk.", min_value=0.0, step=100.0, format="%.2f"
+                ),
+                "total_price": st.column_config.NumberColumn(
+                    "Total Price, Tk.",
+                    min_value=0.0,
+                    step=100.0,
+                    format="%.2f",
+                    help="Override the line total when it differs from quantity × unit price.",
+                ),
             },
         )
-        if isinstance(items_df, pd.DataFrame):
-            st.session_state["quotation_item_rows"] = items_df.fillna("").to_dict("records")
+        if isinstance(edited_df, pd.DataFrame):
+            st.session_state["quotation_item_rows"] = (
+                edited_df.fillna("").to_dict("records")
+            )
+
+        manual_total_value = st.number_input(
+            "Manual total amount (Tk.)",
+            min_value=0.0,
+            step=1000.0,
+            format="%.2f",
+            value=_coerce_float(st.session_state.get("quotation_manual_total"), 0.0),
+            key="quotation_manual_total",
+            help="Optional override if the quoted amount differs from the calculated line totals.",
+        )
 
         terms_notes = st.text_area(
             "Special notes / terms & conditions",
@@ -8827,7 +8915,13 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         reminder_label = None
         if follow_up_label and reminder_days is not None:
             reminder_label = f"Reminder scheduled in {reminder_days} days on {follow_up_label}."
-        grand_total_value = totals_data["grand_total"]
+        manual_total_override = max(
+            _coerce_float(manual_total_value, 0.0),
+            0.0,
+        )
+        grand_total_value = (
+            manual_total_override if manual_total_override > 0 else totals_data["grand_total"]
+        )
 
         customer_contact_combined = dedupe_join(
             [st.session_state.get("quotation_customer_contact"), attention_name], " / "
@@ -8847,11 +8941,17 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         metadata["Salesperson contact"] = salesperson_contact
         metadata["Salesperson email"] = salesperson_email
         metadata["Total amount (BDT)"] = grand_total_value
+        if manual_total_override > 0:
+            metadata["Manual total override (BDT)"] = manual_total_override
         metadata["Status"] = status_value.title()
 
         totals_rows = [("Gross amount", totals_data["gross_total"])]
         if totals_data["discount_total"]:
             totals_rows.append(("Discount total", totals_data["discount_total"]))
+        if manual_total_override > 0 and not math.isclose(
+            manual_total_override, totals_data["grand_total"]
+        ):
+            totals_rows.append(("Manual total override", manual_total_override))
         totals_rows.append(("Grand total", grand_total_value))
 
         workbook_items = [item.copy() for item in items_clean]
@@ -8863,24 +8963,36 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
 
         display_df = pd.DataFrame(workbook_items)
 
+        column_order = [
+            col
+            for col in [
+                "Sl No.",
+                "Description of Generator",
+                "Qty.",
+                "Unit Price, Tk.",
+                "Total Price, Tk.",
+                "Notes",
+            ]
+            if col in display_df.columns
+        ]
+        if column_order:
+            display_df = display_df[column_order]
+
         def _format_quantity_display(value: object) -> str:
             amount = _coerce_float(value, 0.0)
             if math.isclose(amount, round(amount)):
                 return f"{int(round(amount))}"
             return f"{amount:,.2f}"
 
-        money_columns = ["Rate", "Gross amount", "Discount amount", "Line total"]
+        money_columns = ["Unit Price, Tk.", "Total Price, Tk."]
         for col in money_columns:
             if col in display_df.columns:
                 display_df[col] = display_df[col].apply(
                     lambda value: format_money(value) or f"{_coerce_float(value, 0.0):,.2f}"
                 )
-        if "Quantity" in display_df.columns:
-            display_df["Quantity"] = display_df["Quantity"].apply(_format_quantity_display)
-        percentage_columns = ["Discount (%)"]
-        for col in percentage_columns:
-            if col in display_df.columns:
-                display_df[col] = display_df[col].apply(lambda value: f"{_coerce_float(value, 0.0):.2f}%")
+        for qty_col in ["Qty.", "Quantity"]:
+            if qty_col in display_df.columns:
+                display_df[qty_col] = display_df[qty_col].apply(_format_quantity_display)
         display_df = display_df.fillna("")
 
         base_filename = clean_text(reference_value) or f"quotation_{quotation_date.strftime('%Y%m%d')}"
