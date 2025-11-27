@@ -446,6 +446,7 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT UNIQUE,
     pass_hash TEXT,
     phone TEXT,
+    email TEXT,
     title TEXT,
     role TEXT DEFAULT 'staff',
     created_at TEXT DEFAULT (datetime('now'))
@@ -657,6 +658,7 @@ CREATE TABLE IF NOT EXISTS quotations (
     salesperson_name TEXT,
     salesperson_title TEXT,
     salesperson_contact TEXT,
+    salesperson_email TEXT,
     document_path TEXT,
     remarks_internal TEXT,
     created_by INTEGER,
@@ -730,6 +732,7 @@ def ensure_schema_upgrades(conn):
     add_column("customers", "amount_spent", "REAL")
     add_column("customers", "created_by", "INTEGER")
     add_column("users", "phone", "TEXT")
+    add_column("users", "email", "TEXT")
     add_column("users", "title", "TEXT")
     add_column("services", "status", "TEXT DEFAULT 'In progress'")
     add_column("services", "service_start_date", "TEXT")
@@ -763,6 +766,7 @@ def ensure_schema_upgrades(conn):
     add_column("work_reports", "attachment_path", "TEXT")
     add_column("service_documents", "uploaded_by", "INTEGER")
     add_column("maintenance_documents", "uploaded_by", "INTEGER")
+    add_column("quotations", "salesperson_email", "TEXT")
 
     # Remove stored email data for privacy; the app no longer collects it.
     if has_column("customers", "email"):
@@ -1184,13 +1188,68 @@ def _parse_date_from_text(value: str) -> Optional[date]:
     return None
 
 
+def _parse_line_items_from_text(lines: list[str]) -> list[dict[str, object]]:
+    """Extract probable line items from OCR'd inquiry text."""
+
+    items: list[dict[str, object]] = []
+    qty_pattern = re.compile(r"(?P<qty>\d+(?:\.\d+)?)\s*(pcs|nos|units|unit|qty|set|sets|pairs)?", re.IGNORECASE)
+    rate_pattern = re.compile(r"(?:@|x|\b)\s*(?P<rate>\d{2,}(?:[\d,.]*\d)?)")
+    model_pattern = re.compile(r"model[:\s]*([A-Za-z0-9-_.]+)", re.IGNORECASE)
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if len(line.split()) < 2:
+            continue
+
+        qty_match = qty_pattern.search(line)
+        model_match = model_pattern.search(line)
+        rate_match = rate_pattern.search(line)
+
+        qty_value = float(qty_match.group("qty")) if qty_match else 1.0
+        rate_value = 0.0
+        if rate_match:
+            try:
+                rate_value = float(rate_match.group("rate").replace(",", ""))
+            except ValueError:
+                rate_value = 0.0
+
+        model_value = clean_text(model_match.group(1)) if model_match else None
+
+        # Remove obvious numeric tokens when building description for clarity.
+        cleaned_line = re.sub(r"\s{2,}", " ", line)
+        description = cleaned_line
+        if qty_match:
+            description = description.replace(qty_match.group(0), "").strip(", -")
+        if rate_match:
+            description = description.replace(rate_match.group(0), "").strip(", -")
+        if model_value:
+            description = description.replace(model_value, "").strip(", -")
+        description = description.strip() or cleaned_line
+
+        if not description:
+            continue
+
+        items.append(
+            {
+                "description": description,
+                "model": model_value or "",
+                "quantity": qty_value,
+                "rate": rate_value,
+                "discount": 0.0,
+            }
+        )
+
+    return items
+
+
 def _extract_quotation_metadata(text: str) -> dict[str, object]:
-    """Detect useful fields from uploaded quotation text."""
+    """Detect useful fields and probable items from uploaded quotation text."""
 
     if not text:
         return {}
 
-    normalized = "\n".join(line.strip() for line in text.splitlines() if line.strip())
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    normalized = "\n".join(lines)
     updates: dict[str, object] = {}
 
     def _match(patterns: Iterable[str]) -> Optional[str]:
@@ -1206,12 +1265,13 @@ def _extract_quotation_metadata(text: str) -> dict[str, object]:
             r"quote\s*(?:no\.|number|#)[:#\s]*([\w/-]+)",
             r"reference[:#\s]*([\w/-]+)",
             r"ref[:#\s]*([\w/-]+)",
+            r"(?:inquiry|enquiry)\s*(?:no\.|number|#)[:#\s]*([\w/-]+)",
         ]
     )
     if reference:
         updates["quotation_reference"] = reference
 
-    subject_line = _match([r"subject[:\s]*([^\n]+)"])
+    subject_line = _match([r"subject[:\s]*([^\n]+)", r"scope[:\s]*([^\n]+)"])
     if subject_line:
         updates["quotation_subject"] = subject_line
 
@@ -1220,33 +1280,37 @@ def _extract_quotation_metadata(text: str) -> dict[str, object]:
             r"attn\.?[:\s]*([^\n]+)",
             r"attention[:\s]*([^\n]+)",
             r"dear\s+([^\n,]+)",
+            r"contact[:\s]*([^\n,]+)",
         ]
     )
     if attention:
         updates["quotation_attention_name"] = attention
+        updates.setdefault("quotation_customer_contact_name", attention)
 
     company = _match(
         [
             r"company[:\s]*([^\n]+)",
             r"to[:\s]*([^\n]+)",
             r"for[:\s]*([^\n]+)",
+            r"customer[:\s]*([^\n]+)",
         ]
     )
     if company:
         updates["quotation_company_name"] = company
 
-    phone = _match([r"(?:phone|tel|mobile)[:\s]*([+\d][\d\s\-()]+)"])
+    phone = _match([r"(?:phone|tel|mobile)[:\s]*([+\d][\d\s\-()]+)", r"(?:cell|contact)[:\s]*([+\d][\d\s\-()]+)"])
     if phone:
         updates["quotation_customer_contact"] = phone
 
     email = _match([r"email[:\s]*([^\n\s]+@[^\n\s]+)"])
     if email:
+        updates["quotation_customer_email"] = email
         existing = updates.get("quotation_customer_contact")
         updates["quotation_customer_contact"] = (
             f"{existing}, {email}" if existing else email
         )
 
-    address = _match([r"address[:\s]*([^\n]+(?:\n[^\n]+){0,2})"])
+    address = _match([r"address[:\s]*([^\n]+(?:\n[^\n]+){0,3})", r"(?:office|site)\s*address[:\s]*([^\n]+)"])
     if address:
         updates["quotation_customer_address"] = address.replace("\n", " ")
 
@@ -1274,9 +1338,11 @@ def _extract_quotation_metadata(text: str) -> dict[str, object]:
             continue
     if parsed_totals:
         best_total = max(parsed_totals)
-        updates["quotation_admin_notes"] = (
-            f"Detected total from upload: {best_total:,.2f}"
-        )
+        updates["quotation_detected_total"] = best_total
+
+    detected_items = _parse_line_items_from_text(lines)
+    if detected_items:
+        updates["_detected_items"] = detected_items
 
     return updates
 
@@ -2200,7 +2266,8 @@ def normalize_quotation_items(
             continue
 
         kva = clean_text(entry.get("kva"))
-        specs = clean_text(entry.get("specs"))
+        model = clean_text(entry.get("model"))
+        specs = clean_text(entry.get("specs")) or model
         note = clean_text(entry.get("note"))
         quantity = max(_coerce_float(entry.get("quantity"), 0.0), 0.0)
         rate = max(_coerce_float(entry.get("rate"), 0.0), 0.0)
@@ -2211,9 +2278,11 @@ def normalize_quotation_items(
         taxable_value = max(gross_amount - discount_amount, 0.0)
         line_total = taxable_value
 
+        description_label = dedupe_join([description, model], " – ") or description
+
         item = {
             "Item": len(cleaned) + 1,
-            "Description": description,
+            "Description": description_label,
             "kVA": kva,
             "Specs": specs,
             "Note": note,
@@ -2453,6 +2522,7 @@ def _default_quotation_items() -> list[dict[str, object]]:
             "description": "",
             "hsn": "",
             "unit": "",
+            "model": "",
             "kva": "",
             "specs": "",
             "note": "",
@@ -3950,7 +4020,7 @@ def login_box(conn, *, render_id=None):
     if ok:
         row = df_query(
             conn,
-            "SELECT user_id, username, pass_hash, role, phone, title FROM users WHERE username = ?",
+            "SELECT user_id, username, pass_hash, role, phone, title, email FROM users WHERE username = ?",
             (u,),
         )
         if not row.empty and hashlib.sha256(p.encode("utf-8")).hexdigest() == row.iloc[0]["pass_hash"]:
@@ -3960,6 +4030,7 @@ def login_box(conn, *, render_id=None):
                 "role": row.iloc[0]["role"],
                 "phone": clean_text(row.iloc[0].get("phone")),
                 "title": clean_text(row.iloc[0].get("title")),
+                "email": clean_text(row.iloc[0].get("email")),
             }
             st.session_state.page = "Dashboard"
             st.session_state.just_logged_in = True
@@ -7512,15 +7583,15 @@ def _regenerate_quotation_pdf_from_workbook(file_path: Path) -> Optional[bytes]:
 
 
 def _resolve_letterhead_path(template_choice: Optional[str] = None) -> Optional[Path]:
-    template_choice = template_choice or "PS letterhead"
+    template_choice = template_choice or "Default letterhead"
     base_dir = Path(__file__).resolve().parent
     sandbox_letterhead = Path("/mnt/data/eed2a8fe-ec62-4729-9ed4-aedb65953acf.png")
     default_candidates = [
         sandbox_letterhead,
-        base_dir / "PS-SALES-main" / "ps_letterhead.png",
-        base_dir / "ps_letterhead.png",
         base_dir / "letterhead.png",
         base_dir / "letterhead",
+        base_dir / "PS-SALES-main" / "ps_letterhead.png",
+        base_dir / "ps_letterhead.png",
     ]
 
     preferred: list[Path] = []
@@ -7585,15 +7656,18 @@ def _build_quotation_pdf(
     reference = metadata.get("Reference number") or metadata.get("Quotation reference") or "—"
     date_value = metadata.get("Date") or "—"
     customer_name = metadata.get("Customer company") or metadata.get("Customer / organisation") or "—"
-    customer_contact = metadata.get("Customer contact name") or metadata.get("Customer contact") or "—"
+    customer_contact = metadata.get("Customer contact name") or ""
+    customer_contact_details = metadata.get("Customer contact") or ""
     customer_address = metadata.get("Customer address") or ""
     customer_district = metadata.get("Customer district") or ""
     attention_name = metadata.get("Attention name") or "—"
     prepared_by = metadata.get("Salesperson name") or "—"
     prepared_title = metadata.get("Salesperson title") or ""
     prepared_contact = metadata.get("Salesperson contact") or ""
+    prepared_email = metadata.get("Salesperson email") or ""
     intro = metadata.get("Introduction") or "We thank you for your inquiry and are pleased to submit our best proposal as desired."
     closing = metadata.get("Closing / thanks") or metadata.get("Closing") or "With Thanks & Kind Regards"
+    terms = metadata.get("Notes / terms") or ""
 
     story: list[object] = []
     letterhead_path = _resolve_letterhead_path(template_choice)
@@ -7644,7 +7718,7 @@ def _build_quotation_pdf(
     story.append(header_table)
     story.append(Spacer(1, 10))
 
-    address_lines = [customer_name, customer_contact, customer_address, customer_district]
+    address_lines = [customer_name, customer_contact, customer_contact_details, customer_address, customer_district]
     address_text = "<br/>".join(filter(None, address_lines)) or "—"
     story.append(Paragraph("<b>To</b>", styles["BodySmall"]))
     story.append(Paragraph(address_text, styles["BodySmall"]))
@@ -7765,6 +7839,11 @@ def _build_quotation_pdf(
         story.append(Spacer(1, 6))
 
     story.append(Paragraph(f"In Words: {grand_total_words}", styles["BodySmall"]))
+    if terms:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("<b>Terms & Conditions</b>", styles["BodySmall"]))
+        story.append(Spacer(1, 4))
+        story.append(Paragraph(html.escape(terms).replace("\n", "<br/>"), styles["BodySmall"]))
     story.append(Spacer(1, 16))
     story.append(Paragraph(closing, styles["BodySmall"]))
     story.append(Spacer(1, 30))
@@ -7773,6 +7852,8 @@ def _build_quotation_pdf(
         story.append(Paragraph(prepared_title, styles["BodySmall"]))
     if prepared_contact:
         story.append(Paragraph(prepared_contact, styles["BodySmall"]))
+    if prepared_email:
+        story.append(Paragraph(prepared_email, styles["BodySmall"]))
 
     doc.build(
         story,
@@ -8065,6 +8146,7 @@ def _save_quotation_record(conn, payload: dict) -> Optional[int]:
         "salesperson_name",
         "salesperson_title",
         "salesperson_contact",
+        "salesperson_email",
         "document_path",
         "remarks_internal",
         "created_by",
@@ -8324,7 +8406,33 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
     st.session_state.setdefault("quotation_item_rows", _default_quotation_items())
 
     user = get_current_user()
-    salesperson_seed = clean_text(user.get("username")) or ""
+    salesperson_profile = {
+        "name": clean_text(user.get("username")) or "",
+        "title": clean_text(user.get("title")) or "",
+        "phone": clean_text(user.get("phone")) or "",
+        "email": clean_text(user.get("email")) or "",
+    }
+
+    uid = current_user_id()
+    if uid is not None:
+        try:
+            profile_df = df_query(
+                conn,
+                "SELECT username, phone, email, title FROM users WHERE user_id=?",
+                (uid,),
+            )
+            if not profile_df.empty:
+                row = profile_df.iloc[0]
+                salesperson_profile = {
+                    "name": clean_text(row.get("username")) or salesperson_profile["name"],
+                    "title": clean_text(row.get("title")) or salesperson_profile["title"],
+                    "phone": clean_text(row.get("phone")) or salesperson_profile["phone"],
+                    "email": clean_text(row.get("email")) or salesperson_profile["email"],
+                }
+        except Exception:
+            pass
+
+    salesperson_seed = salesperson_profile["name"]
     customer_df = df_query(
         conn,
         """
@@ -8402,21 +8510,32 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         if upload_signature and upload_signature != last_signature:
             text_content, warnings = _extract_text_from_quotation_upload(uploaded_quote)
             metadata = _extract_quotation_metadata(text_content)
+            detected_items = metadata.pop("_detected_items", None)
+            detected_total = metadata.pop("quotation_detected_total", None)
             applied = []
             label_map = {
                 "quotation_reference": "Reference",
                 "quotation_subject": "Subject",
                 "quotation_attention_name": "Attention",
+                "quotation_customer_contact_name": "Contact person",
                 "quotation_company_name": "Company",
                 "quotation_customer_contact": "Phone",
+                "quotation_customer_email": "Email",
                 "quotation_customer_address": "Address",
                 "quotation_date": "Date",
-                "quotation_admin_notes": "Admin notes",
+                "quotation_terms": "Notes",
             }
             for key, value in metadata.items():
-                if key == "quotation_admin_notes" or not st.session_state.get(key):
+                if key == "quotation_terms" or not st.session_state.get(key):
                     st.session_state[key] = value
                     applied.append(label_map.get(key, key))
+            if detected_items:
+                st.session_state["quotation_item_rows"] = detected_items
+                applied.append("Products / line items")
+            if detected_total and not st.session_state.get("quotation_terms"):
+                st.session_state["quotation_terms"] = (
+                    f"Detected total from upload: {detected_total:,.2f}"
+                )
             st.session_state["quotation_last_upload_signature"] = upload_signature
             if applied:
                 st.success(
@@ -8691,6 +8810,20 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
 
         st.divider()
 
+        contact_cols = st.columns(2)
+        with contact_cols[0]:
+            customer_contact = st.text_input(
+                "Customer phone",
+                value=st.session_state.get("quotation_customer_contact", ""),
+                key="quotation_customer_contact",
+            )
+        with contact_cols[1]:
+            customer_email = st.text_input(
+                "Customer email",
+                value=st.session_state.get("quotation_customer_email", ""),
+                key="quotation_customer_email",
+            )
+
         items_toolbar = st.columns(3)
         with items_toolbar[0]:
             add_item = st.form_submit_button("Add item", use_container_width=True)
@@ -8708,6 +8841,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
         required_item_columns = [
             "description",
+            "model",
             "hsn",
             "unit",
             "quantity",
@@ -8728,145 +8862,120 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         else:
             items_df_seed = pd.DataFrame(_default_quotation_items())
 
-        items_df_seed["description"] = items_df_seed["description"].fillna("")
-        items_df_seed["hsn"] = items_df_seed["hsn"].fillna("")
-        items_df_seed["unit"] = items_df_seed["unit"].fillna("")
-        items_df_seed["quantity"] = (
-            pd.to_numeric(items_df_seed["quantity"], errors="coerce")
-            .fillna(1.0)
-            .clip(lower=0)
-        )
-        items_df_seed["rate"] = (
-            pd.to_numeric(items_df_seed["rate"], errors="coerce")
-            .fillna(0.0)
-            .clip(lower=0)
-        )
-        items_df_seed["discount"] = (
-            pd.to_numeric(items_df_seed["discount"], errors="coerce")
-            .fillna(0.0)
-            .clip(lower=0)
-        )
+    items_df_seed["description"] = items_df_seed["description"].fillna("")
+    if "model" in items_df_seed.columns:
+        items_df_seed["model"] = items_df_seed["model"].fillna("")
+    items_df_seed["hsn"] = items_df_seed["hsn"].fillna("")
+    items_df_seed["unit"] = items_df_seed["unit"].fillna("")
+    items_df_seed["quantity"] = (
+        pd.to_numeric(items_df_seed["quantity"], errors="coerce")
+        .fillna(1.0)
+        .clip(lower=0)
+    )
+    items_df_seed["rate"] = (
+        pd.to_numeric(items_df_seed["rate"], errors="coerce")
+        .fillna(0.0)
+        .clip(lower=0)
+    )
+    items_df_seed["discount"] = (
+        pd.to_numeric(items_df_seed["discount"], errors="coerce")
+        .fillna(0.0)
+        .clip(lower=0)
+    )
 
-        items_editor = st.data_editor(
-            items_df_seed,
-            num_rows="dynamic",
-            hide_index=True,
-            key="quotation_items_table",
-            use_container_width=True,
-            column_config={
-                "description": st.column_config.TextColumn(
-                    "Tracked products",
-                    help="Describe the item or service",
-                ),
-                "hsn": st.column_config.TextColumn(
-                    "HSN/SAC", help="HSN/SAC code, if applicable"
-                ),
-                "unit": st.column_config.TextColumn("Unit"),
-                "quantity": st.column_config.NumberColumn(
-                    "Quantity",
-                    min_value=0.0,
-                    step=1.0,
-                    format="%.2f",
-                ),
-                "rate": st.column_config.NumberColumn(
-                    "Rate",
-                    min_value=0.0,
-                    step=100.0,
-                    format="%.2f",
-                ),
-                "discount": st.column_config.NumberColumn(
-                    "Discount (%)",
-                    help="Discount percentage for this line item",
-                    min_value=0.0,
-                    max_value=100.0,
-                    step=0.5,
-                    format="%.2f",
-                ),
-            },
-        )
-
-        settings_cols = st.columns(2)
-        with settings_cols[0]:
-            quote_type = st.selectbox(
-                "Quote type",
-                ["Retail", "Wholesale"],
-                key="quotation_quote_type",
-            )
-            default_discount = st.number_input(
-                "Optional discount (%)",
+    items_editor = st.data_editor(
+        items_df_seed,
+        num_rows="dynamic",
+        hide_index=True,
+        key="quotation_items_table",
+        use_container_width=True,
+        column_config={
+            "description": st.column_config.TextColumn(
+                "Tracked products",
+                help="Describe the item or service",
+            ),
+            "model": st.column_config.TextColumn(
+                "Model / SKU",
+                help="Optional model or catalog reference",
+            ),
+            "hsn": st.column_config.TextColumn(
+                "HSN/SAC", help="HSN/SAC code, if applicable"
+            ),
+            "unit": st.column_config.TextColumn("Unit"),
+            "quantity": st.column_config.NumberColumn(
+                "Quantity",
+                min_value=0.0,
+                step=1.0,
+                format="%.2f",
+            ),
+            "rate": st.column_config.NumberColumn(
+                "Rate",
+                min_value=0.0,
+                step=100.0,
+                format="%.2f",
+            ),
+            "discount": st.column_config.NumberColumn(
+                "Discount (%)",
+                help="Discount percentage for this line item",
                 min_value=0.0,
                 max_value=100.0,
-                value=float(st.session_state.get("quotation_default_discount") or 0.0),
                 step=0.5,
-                key="quotation_default_discount",
-            )
-            customer_district = st.text_input(
-                "Customer district",
-                value=st.session_state.get("quotation_customer_district", ""),
-                key="quotation_customer_district",
-            )
-            customer_contact = st.text_input(
-                "Customer contact number",
-                value=st.session_state.get("quotation_customer_contact", ""),
-                key="quotation_customer_contact",
-            )
-            attention_title = st.text_input(
-                "Attention title",
-                value=st.session_state.get("quotation_attention_title", ""),
-                key="quotation_attention_title",
-            )
-        with settings_cols[1]:
-            prepared_by = st.text_input(
-                "Salesperson name",
-                value=st.session_state.get("quotation_prepared_by") or salesperson_seed,
-                key="quotation_prepared_by",
-            )
-            salesperson_title = st.text_input(
-                "Salesperson title",
-                value=st.session_state.get("quotation_salesperson_title", ""),
-                key="quotation_salesperson_title",
-            )
-            salesperson_contact = st.text_input(
-                "Salesperson contact",
-                value=st.session_state.get("quotation_salesperson_contact", ""),
-                key="quotation_salesperson_contact",
-            )
-            admin_notes = st.text_area(
-                "Quotation remarks for admin",
-                value=st.session_state.get("quotation_admin_notes", ""),
-                key="quotation_admin_notes",
-            )
+                format="%.2f",
+            ),
+        },
+    )
 
-        st.session_state["quotation_item_rows"] = items_editor.to_dict("records")
+    st.session_state["quotation_item_rows"] = items_editor.to_dict("records")
 
-        follow_up_status = st.selectbox(
-            "Salesperson follow-up status",
-            ["Possible", "Hot", "Cold", "Closed", "No response"],
-            key="quotation_follow_up_status",
+    detail_cols = st.columns(2)
+    with detail_cols[0]:
+        terms_notes = st.text_area(
+            "Special notes / terms & conditions",
+            value=st.session_state.get("quotation_terms", ""),
+            key="quotation_terms",
         )
-        follow_up_notes = st.text_area(
-            "Salesperson follow-up notes",
-            value=st.session_state.get("quotation_follow_up_notes", ""),
-            key="quotation_follow_up_notes",
-        )
-        follow_up_choice = st.radio(
-            "Suggested follow-up timing",
-            list(follow_up_presets.keys()),
-            horizontal=True,
-            key="quotation_follow_up_choice",
-        )
-        follow_up_date_value = st.date_input(
-            "Follow-up date",
-            value=st.session_state.get("quotation_follow_up_date") or (default_date + timedelta(days=3)),
-            key="quotation_follow_up_date",
-        )
-
         status_value = st.selectbox(
             "Quotation status",
             status_choices,
             format_func=lambda val: val.title(),
             key="quotation_status",
         )
+    with detail_cols[1]:
+        st.markdown("**Salesperson (from your profile)**")
+        prepared_by = st.text_input(
+            "Name",
+            value=salesperson_profile.get("name", ""),
+            key="quotation_prepared_by",
+            disabled=True,
+        )
+        salesperson_title = st.text_input(
+            "Title / designation",
+            value=salesperson_profile.get("title", ""),
+            key="quotation_salesperson_title",
+            disabled=True,
+        )
+        salesperson_contact = st.text_input(
+            "Phone",
+            value=salesperson_profile.get("phone", ""),
+            key="quotation_salesperson_contact",
+            disabled=True,
+        )
+        salesperson_email = st.text_input(
+            "Email",
+            value=salesperson_profile.get("email", ""),
+            key="quotation_salesperson_email",
+            disabled=True,
+        )
+
+        quote_type = "Standard"
+        default_discount = 0.0
+        customer_district = st.session_state.get("quotation_customer_district", "")
+        attention_title = st.session_state.get("quotation_attention_title", "")
+        admin_notes = terms_notes
+        follow_up_status = "Pending"
+        follow_up_notes = ""
+        follow_up_choice = None
+        follow_up_date_value = None
 
         action_cols = st.columns([1, 1])
         reset = action_cols[1].form_submit_button("Reset form")
@@ -8912,14 +9021,14 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         follow_up_date = follow_up_date_value
         if reminder_days is not None:
             follow_up_date = quotation_date + timedelta(days=reminder_days)
-        follow_up_iso = to_iso_date(follow_up_date)
-        follow_up_label = format_period_range(follow_up_iso, follow_up_iso)
-        reminder_label = (
-            f"Reminder scheduled in {reminder_days} days on {follow_up_label}."
-            if reminder_days is not None
-            else f"Reminder scheduled for {follow_up_label}."
-        )
+        follow_up_iso = to_iso_date(follow_up_date) if follow_up_date else None
+        follow_up_label = format_period_range(follow_up_iso, follow_up_iso) if follow_up_iso else ""
+        reminder_label = None
+        if follow_up_label and reminder_days is not None:
+            reminder_label = f"Reminder scheduled in {reminder_days} days on {follow_up_label}."
         grand_total_value = totals_data["grand_total"]
+
+        customer_contact_combined = dedupe_join([customer_contact, customer_email], " / ")
 
         metadata = OrderedDict()
         metadata["Reference number"] = reference_value
@@ -8927,21 +9036,17 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         metadata["Customer contact name"] = customer_contact_name
         metadata["Customer company"] = customer_company
         metadata["Customer address"] = customer_address
-        metadata["Customer district"] = customer_district
-        metadata["Customer contact"] = customer_contact
+        metadata["Customer contact"] = customer_contact_combined
         metadata["Attention name"] = attention_name
-        metadata["Attention title"] = attention_title
         metadata["Subject"] = subject_line
         metadata["Salutation"] = salutation
         metadata["Introduction"] = intro_text
-        metadata["Quote type"] = quote_type
+        metadata["Notes / terms"] = terms_notes
         metadata["Closing / thanks"] = closing_text
         metadata["Salesperson name"] = prepared_by
         metadata["Salesperson title"] = salesperson_title
         metadata["Salesperson contact"] = salesperson_contact
-        metadata["Follow-up status"] = follow_up_status
-        metadata["Follow-up date"] = follow_up_label
-        metadata["Remarks (admin)"] = admin_notes
+        metadata["Salesperson email"] = salesperson_email
         metadata["Total amount (BDT)"] = grand_total_value
         metadata["Status"] = status_value.title()
 
@@ -8992,7 +9097,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             "customer_company": customer_company,
             "customer_address": customer_address,
             "customer_district": customer_district,
-            "customer_contact": customer_contact,
+            "customer_contact": customer_contact_combined,
             "attention_name": attention_name,
             "attention_title": attention_title,
             "subject": subject_line,
@@ -9011,7 +9116,8 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             "salesperson_name": prepared_by,
             "salesperson_title": salesperson_title,
             "salesperson_contact": salesperson_contact,
-            "remarks_internal": admin_notes,
+            "salesperson_email": salesperson_email,
+            "remarks_internal": terms_notes,
             "created_by": current_user_id(),
         }
         record_id = _save_quotation_record(conn, payload)
@@ -12042,7 +12148,11 @@ def users_admin_page(conn):
     st.subheader("👤 Users (Admin)")
     users = df_query(
         conn,
-        "SELECT user_id as id, username, phone, title, role, created_at FROM users ORDER BY datetime(created_at) DESC",
+        """
+        SELECT user_id as id, username, phone, email, title, role, created_at
+        FROM users
+        ORDER BY datetime(created_at) DESC
+        """,
     )
     users = users.assign(created_at=pd.to_datetime(users["created_at"], errors="coerce").dt.strftime(DATE_FMT))
     st.dataframe(users.drop(columns=["id"], errors="ignore"))
@@ -12052,6 +12162,7 @@ def users_admin_page(conn):
             u = st.text_input("Username")
             p = st.text_input("Password", type="password")
             phone = st.text_input("Phone number (required)")
+            email = st.text_input("Email (optional)")
             title = st.text_input("Title / role", help="Shown on quotations by default")
             role = st.selectbox("Role", ["staff", "admin"])
             ok = st.form_submit_button("Create")
@@ -12062,8 +12173,15 @@ def users_admin_page(conn):
                 h = hashlib.sha256(p.encode("utf-8")).hexdigest()
                 try:
                     conn.execute(
-                        "INSERT INTO users (username, pass_hash, phone, title, role) VALUES (?, ?, ?, ?, ?)",
-                        (u.strip(), h, clean_text(phone), clean_text(title), role),
+                        "INSERT INTO users (username, pass_hash, phone, email, title, role) VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            u.strip(),
+                            h,
+                            clean_text(phone),
+                            clean_text(email),
+                            clean_text(title),
+                            role,
+                        ),
                     )
                     conn.commit()
                     st.success("User added")
