@@ -8644,182 +8644,182 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         if template_path
         else "background-color: #f8fafc;"
     )
-        overlay_root = (
-            f"div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-wrapper-{render_id})"
-        )
-        overlay = st.container()
-        overlay.markdown(
-            f"""
-            <style>
-              {overlay_root} {{
-                  position: relative;
-                  margin: 0 auto 1.5rem auto;
-                  width: 800px;
-                  aspect-ratio: 210 / 297;
-                  {overlay_bg}
-                  background-size: contain;
-                  background-repeat: no-repeat;
-                  background-position: top center;
-                  border-radius: 12px;
-                  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
-                  overflow: hidden;
-                  min-height: 1100px;
-                  isolation: isolate;
-              }}
-              {overlay_root} > div {{
-                  margin: 0 !important;
-                  padding: 0 !important;
-              }}
-              {overlay_root} .field-anchor {{
-                  position: absolute;
-                  pointer-events: none;
-                  inset: auto;
-              }}
-              {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] {{
-                  position: absolute;
-              }}
-              {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stTextInput > div > input,
-              {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stDateInput input,
-              {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stNumberInput input,
-              {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
-                  background: rgba(255, 255, 255, 0.9);
-                  border: 0;
-                  border-bottom: 1px dashed #94a3b8;
-                  border-radius: 8px;
-                  box-shadow: none;
-                  padding: 6px 8px;
-                  font-size: 14px;
-                  color: #0f172a;
-              }}
-              {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
-                  min-height: 64px;
-              }}
-              {overlay_root} .date-field-{render_id},
-              {overlay_root} .date-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-                  top: 72px;
-                  left: 520px;
-                  width: 200px;
-              }}
-              {overlay_root} .ref-field-{render_id},
-              {overlay_root} .ref-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-                  top: 110px;
-                  left: 500px;
-                  width: 230px;
-              }}
-              {overlay_root} .company-field-{render_id},
-              {overlay_root} .company-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-                  top: 178px;
-                  left: 80px;
-                  width: 540px;
-              }}
-              {overlay_root} .contact-field-{render_id},
-              {overlay_root} .contact-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-                  top: 206px;
-                  left: 80px;
-                  width: 520px;
-              }}
-              {overlay_root} .attention-field-{render_id},
-              {overlay_root} .attention-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-                  top: 236px;
-                  left: 80px;
-                  width: 480px;
-              }}
-              {overlay_root} .address-field-{render_id},
-              {overlay_root} .address-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-                  top: 304px;
-                  left: 80px;
-                  width: 640px;
-              }}
-              {overlay_root} .address-field-{render_id} + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
-                  min-height: 100px;
-              }}
-            </style>
-            <div class="letterhead-overlay-marker-{render_id} letterhead-wrapper-{render_id}"></div>
-            """,
-            unsafe_allow_html=True,
+    overlay_root = (
+        f"div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-wrapper-{render_id})"
+    )
+    overlay = st.container()
+    overlay.markdown(
+        f"""
+        <style>
+          {overlay_root} {{
+              position: relative;
+              margin: 0 auto 1.5rem auto;
+              width: 800px;
+              aspect-ratio: 210 / 297;
+              {overlay_bg}
+              background-size: contain;
+              background-repeat: no-repeat;
+              background-position: top center;
+              border-radius: 12px;
+              box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+              overflow: hidden;
+              min-height: 1100px;
+              isolation: isolate;
+          }}
+          {overlay_root} > div {{
+              margin: 0 !important;
+              padding: 0 !important;
+          }}
+          {overlay_root} .field-anchor {{
+              position: absolute;
+              pointer-events: none;
+              inset: auto;
+          }}
+          {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] {{
+              position: absolute;
+          }}
+          {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stTextInput > div > input,
+          {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stDateInput input,
+          {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stNumberInput input,
+          {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
+              background: rgba(255, 255, 255, 0.9);
+              border: 0;
+              border-bottom: 1px dashed #94a3b8;
+              border-radius: 8px;
+              box-shadow: none;
+              padding: 6px 8px;
+              font-size: 14px;
+              color: #0f172a;
+          }}
+          {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
+              min-height: 64px;
+          }}
+          {overlay_root} .date-field-{render_id},
+          {overlay_root} .date-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+              top: 72px;
+              left: 520px;
+              width: 200px;
+          }}
+          {overlay_root} .ref-field-{render_id},
+          {overlay_root} .ref-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+              top: 110px;
+              left: 500px;
+              width: 230px;
+          }}
+          {overlay_root} .company-field-{render_id},
+          {overlay_root} .company-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+              top: 178px;
+              left: 80px;
+              width: 540px;
+          }}
+          {overlay_root} .contact-field-{render_id},
+          {overlay_root} .contact-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+              top: 206px;
+              left: 80px;
+              width: 520px;
+          }}
+          {overlay_root} .attention-field-{render_id},
+          {overlay_root} .attention-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+              top: 236px;
+              left: 80px;
+              width: 480px;
+          }}
+          {overlay_root} .address-field-{render_id},
+          {overlay_root} .address-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
+              top: 304px;
+              left: 80px;
+              width: 640px;
+          }}
+          {overlay_root} .address-field-{render_id} + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
+              min-height: 100px;
+          }}
+        </style>
+        <div class="letterhead-overlay-marker-{render_id} letterhead-wrapper-{render_id}"></div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not template_path:
+        overlay.warning(
+            "Letterhead template missing. Upload ps_letterhead.png to render the overlay background."
         )
 
-        if not template_path:
-            overlay.warning(
-                "Letterhead template missing. Upload ps_letterhead.png to render the overlay background."
-            )
-
-        overlay.markdown(
-            f'<div class="field-anchor date-field-{render_id}"></div>',
-            unsafe_allow_html=True,
+    overlay.markdown(
+        f'<div class="field-anchor date-field-{render_id}"></div>',
+        unsafe_allow_html=True,
+    )
+    with overlay.container():
+        quotation_date = st.date_input(
+            "",
+            value=st.session_state.get("quotation_date") or default_date,
+            key="quotation_date",
+            label_visibility="collapsed",
         )
-        with overlay.container():
-            quotation_date = st.date_input(
-                "",
-                value=st.session_state.get("quotation_date") or default_date,
-                key="quotation_date",
-                label_visibility="collapsed",
-            )
 
-        overlay.markdown(
-            f'<div class="field-anchor ref-field-{render_id}"></div>',
-            unsafe_allow_html=True,
+    overlay.markdown(
+        f'<div class="field-anchor ref-field-{render_id}"></div>',
+        unsafe_allow_html=True,
+    )
+    with overlay.container():
+        reference_value = st.text_input(
+            "",
+            value=st.session_state.get("quotation_reference", ""),
+            key="quotation_reference",
+            label_visibility="collapsed",
         )
-        with overlay.container():
-            reference_value = st.text_input(
-                "",
-                value=st.session_state.get("quotation_reference", ""),
-                key="quotation_reference",
-                label_visibility="collapsed",
-            )
 
-        overlay.markdown(
-            f'<div class="field-anchor company-field-{render_id}"></div>',
-            unsafe_allow_html=True,
+    overlay.markdown(
+        f'<div class="field-anchor company-field-{render_id}"></div>',
+        unsafe_allow_html=True,
+    )
+    with overlay.container():
+        customer_company = st.text_input(
+            "",
+            value=st.session_state.get("quotation_company_name", ""),
+            key="quotation_company_name",
+            label_visibility="collapsed",
         )
-        with overlay.container():
-            customer_company = st.text_input(
-                "",
-                value=st.session_state.get("quotation_company_name", ""),
-                key="quotation_company_name",
-                label_visibility="collapsed",
-            )
 
-        overlay.markdown(
-            f'<div class="field-anchor contact-field-{render_id}"></div>',
-            unsafe_allow_html=True,
+    overlay.markdown(
+        f'<div class="field-anchor contact-field-{render_id}"></div>',
+        unsafe_allow_html=True,
+    )
+    with overlay.container():
+        customer_contact_name = st.text_input(
+            "",
+            value=st.session_state.get("quotation_customer_contact_name", ""),
+            key="quotation_customer_contact_name",
+            label_visibility="collapsed",
         )
-        with overlay.container():
-            customer_contact_name = st.text_input(
-                "",
-                value=st.session_state.get("quotation_customer_contact_name", ""),
-                key="quotation_customer_contact_name",
-                label_visibility="collapsed",
-            )
 
-        overlay.markdown(
-            f'<div class="field-anchor attention-field-{render_id}"></div>',
-            unsafe_allow_html=True,
+    overlay.markdown(
+        f'<div class="field-anchor attention-field-{render_id}"></div>',
+        unsafe_allow_html=True,
+    )
+    with overlay.container():
+        attention_name = st.text_input(
+            "",
+            value=st.session_state.get("quotation_attention_name", ""),
+            key="quotation_attention_name",
+            label_visibility="collapsed",
         )
-        with overlay.container():
-            attention_name = st.text_input(
-                "",
-                value=st.session_state.get("quotation_attention_name", ""),
-                key="quotation_attention_name",
-                label_visibility="collapsed",
-            )
 
-        overlay.markdown(
-            f'<div class="field-anchor address-field-{render_id}"></div>',
-            unsafe_allow_html=True,
+    overlay.markdown(
+        f'<div class="field-anchor address-field-{render_id}"></div>',
+        unsafe_allow_html=True,
+    )
+    with overlay.container():
+        customer_address = st.text_area(
+            "",
+            value=st.session_state.get("quotation_customer_address", ""),
+            key="quotation_customer_address",
+            label_visibility="collapsed",
         )
-        with overlay.container():
-            customer_address = st.text_area(
-                "",
-                value=st.session_state.get("quotation_customer_address", ""),
-                key="quotation_customer_address",
-                label_visibility="collapsed",
-            )
 
-        subject_line = st.session_state.get("quotation_subject", "")
-        salutation = ""
-        intro_text = ""
-        closing_text = ""
+    subject_line = st.session_state.get("quotation_subject", "")
+    salutation = ""
+    intro_text = ""
+    closing_text = ""
 
     st.session_state["quotation_item_rows"] = []
 
