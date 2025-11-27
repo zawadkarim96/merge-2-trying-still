@@ -8629,96 +8629,21 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         "Custom date": None,
     }
 
-    with st.container():
-        header_cols = st.columns((1.25, 0.75))
-        with header_cols[0]:
-            template_choice = st.selectbox(
-                "Select quotation letter",
-                ["Default letterhead", "PS letterhead"],
-                key="quotation_letter_template",
-            )
-        with header_cols[1]:
-            selected_customer = st.selectbox(
-                "Customer details seed",
-                autofill_options,
-                format_func=lambda val: autofill_labels.get(val, "Manual entry"),
-                key="quotation_autofill_customer",
-            )
+    template_choice = "Default letterhead"
+    st.session_state["quotation_autofill_customer"] = None
 
-        upload_cols = st.columns(2)
-        with upload_cols[0]:
-            uploaded_quote = st.file_uploader(
-                "Upload quotation (PDF or image)",
-                type=["pdf", "png", "jpg", "jpeg"],
-                key="quotation_upload",
-                help="We will scan the file and populate matching fields automatically.",
-            )
-        with upload_cols[1]:
-            st.caption(
-                "Uploads can auto-fill the reference, date, customer details, product lines (with quantity & rate), and totals when detected."
-            )
+    resolved_render_id = render_id or st.session_state.get("quotation_overlay_render_id")
+    if not resolved_render_id:
+        resolved_render_id = int(time.time())
+    st.session_state["quotation_overlay_render_id"] = resolved_render_id
+    render_id = resolved_render_id
 
-        upload_signature = None
-        if uploaded_quote is not None:
-            upload_signature = (
-                uploaded_quote.name,
-                uploaded_quote.size,
-                uploaded_quote.type,
-            )
-        last_signature = st.session_state.get("quotation_last_upload_signature")
-        if upload_signature and upload_signature != last_signature:
-            text_content, warnings = _extract_text_from_quotation_upload(uploaded_quote)
-            metadata = _extract_quotation_metadata(text_content)
-            detected_items = metadata.pop("_detected_items", None)
-            detected_total = metadata.pop("quotation_detected_total", None)
-            applied = []
-            label_map = {
-                "quotation_reference": "Reference",
-                "quotation_subject": "Subject",
-                "quotation_attention_name": "Attention",
-                "quotation_customer_contact_name": "Contact person",
-                "quotation_company_name": "Company",
-                "quotation_customer_contact": "Phone",
-                "quotation_customer_email": "Email",
-                "quotation_customer_address": "Address",
-                "quotation_date": "Date",
-                "quotation_terms": "Notes",
-            }
-            for key, value in metadata.items():
-                if key == "quotation_terms" or not st.session_state.get(key):
-                    st.session_state[key] = value
-                    applied.append(label_map.get(key, key))
-            if detected_items:
-                st.session_state["quotation_item_rows"] = detected_items
-                applied.append("Products / line items")
-            if detected_total and not st.session_state.get("quotation_terms"):
-                st.session_state["quotation_terms"] = (
-                    f"Detected total from upload: {detected_total:,.2f}"
-                )
-            st.session_state["quotation_last_upload_signature"] = upload_signature
-            if applied:
-                st.success(
-                    f"Uploaded quotation detected and auto-filled: {', '.join(sorted(applied))}."
-                )
-            else:
-                st.info("Upload processed but no new fields were detected to fill.")
-            for warning in warnings:
-                st.warning(warning)
-        elif upload_signature:
-            st.caption("Using details from your uploaded quotation.")
-
-        resolved_render_id = render_id or st.session_state.get("quotation_overlay_render_id")
-        if not resolved_render_id:
-            resolved_render_id = int(time.time())
-        st.session_state["quotation_overlay_render_id"] = resolved_render_id
-        render_id = resolved_render_id
-
-        template_path = _resolve_letterhead_path(template_choice)
-        overlay_bg = (
-            f"background-image: url('file://{template_path}');"
-            if template_path
-            else "background-color: #f8fafc;"
-        )
+    template_path = _resolve_letterhead_path(template_choice)
+    overlay_bg = (
+        f"background-image: url('file://{template_path}');"
+        if template_path
+        else "background-color: #f8fafc;"
+    )
         overlay_root = (
             f"div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-wrapper-{render_id})"
         )
@@ -8896,83 +8821,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         intro_text = ""
         closing_text = ""
 
-        st.divider()
-
-        st.markdown("#### Price schedule (auto-filled when detected)")
-        items_toolbar = st.columns(3)
-        with items_toolbar[0]:
-            add_item = st.button("Add item", use_container_width=True)
-        with items_toolbar[1]:
-            clear_items = st.button("Clear items", use_container_width=True)
-        with items_toolbar[2]:
-            reset_items = st.button("Reset defaults", use_container_width=True)
-        if add_item:
-            st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
-        if clear_items:
-            st.session_state["quotation_item_rows"] = []
-        if reset_items:
-            st.session_state["quotation_item_rows"] = _default_quotation_items()
-
-        items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
-        required_item_columns = [
-            "description",
-            "quantity",
-            "rate",
-        ]
-
-        if not items_df_seed.empty:
-            for column in required_item_columns:
-                if column not in items_df_seed.columns:
-                    default_value: object = ""
-                    if column == "quantity":
-                        default_value = 1.0
-                    elif column in {"rate", "discount"}:
-                        default_value = 0.0
-                    items_df_seed[column] = default_value
-            items_df_seed = items_df_seed[required_item_columns]
-        else:
-            items_df_seed = pd.DataFrame(_default_quotation_items())
-
-    items_df_seed["description"] = items_df_seed["description"].fillna("")
-    items_df_seed["quantity"] = (
-        pd.to_numeric(items_df_seed["quantity"], errors="coerce")
-        .fillna(1.0)
-        .clip(lower=0)
-    )
-    items_df_seed["rate"] = (
-        pd.to_numeric(items_df_seed["rate"], errors="coerce")
-        .fillna(0.0)
-        .clip(lower=0)
-    )
-
-    items_editor = st.data_editor(
-        items_df_seed,
-        num_rows="dynamic",
-        hide_index=True,
-        key="quotation_items_table",
-        use_container_width=True,
-        column_config={
-            "description": st.column_config.TextColumn(
-                "Description of Generator",
-                help="Describe the item or service",
-            ),
-            "quantity": st.column_config.NumberColumn(
-                "Qty.",
-                min_value=0.0,
-                step=1.0,
-                format="%.2f",
-            ),
-            "rate": st.column_config.NumberColumn(
-                "Unit Price, Tk.",
-                min_value=0.0,
-                step=100.0,
-                format="%.2f",
-            ),
-        },
-        column_order=["description", "quantity", "rate"],
-    )
-
-    st.session_state["quotation_item_rows"] = items_editor.to_dict("records")
+    st.session_state["quotation_item_rows"] = []
 
     terms_notes = st.text_area(
         "Special notes / terms & conditions",
@@ -9041,33 +8890,13 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         )
         _safe_rerun()
 
-    if st.session_state.get("quotation_autofill_customer"):
-        seed = autofill_records.get(int(st.session_state["quotation_autofill_customer"]))
-        if seed:
-            if not st.session_state.get("quotation_company_name"):
-                st.session_state["quotation_company_name"] = clean_text(seed.get("company_name")) or clean_text(seed.get("name")) or ""
-            if not st.session_state.get("quotation_customer_contact"):
-                st.session_state["quotation_customer_contact"] = clean_text(seed.get("phone")) or ""
-            if not st.session_state.get("quotation_customer_address"):
-                st.session_state["quotation_customer_address"] = (
-                    clean_text(seed.get("delivery_address"))
-                    or clean_text(seed.get("address"))
-                    or ""
-                )
-            if not st.session_state.get("quotation_customer_district"):
-                st.session_state["quotation_customer_district"] = clean_text(seed.get("district")) or ""
-
     if submit:
-        item_records = st.session_state.get("quotation_item_rows", [])
-        prepared_items = [dict(item) for item in item_records]
+        prepared_items = [dict(item) for item in st.session_state.get("quotation_item_rows", [])]
         for item in prepared_items:
             if item.get("discount") in (None, ""):
                 item["discount"] = default_discount
 
         items_clean, totals_data = normalize_quotation_items(prepared_items)
-        if not items_clean:
-            st.error("Add at least one item with a description to create a quotation.")
-            return
 
         reminder_days = follow_up_presets.get(follow_up_choice)
         follow_up_date = follow_up_date_value
@@ -13855,14 +13684,12 @@ def main():
     role = user.get("role")
     with st.sidebar:
         st.markdown("### Navigation")
-        create_quote = st.button(
-            "🧾 Quotation", type="primary", use_container_width=True
-        )
         if role == "admin":
             pages = [
                 "Dashboard",
                 "Work done",
                 "Delivery Orders",
+                "Quotation",
                 "Customers",
                 "Customer Summary",
                 "Scraps",
@@ -13879,6 +13706,7 @@ def main():
                 "Dashboard",
                 "Work done",
                 "Delivery Orders",
+                "Quotation",
                 "Customers",
                 "Customer Summary",
                 "Warranties",
@@ -13887,43 +13715,21 @@ def main():
                 "Maintenance and Service",
             ]
 
-        if "nav_selection" not in st.session_state:
-            st.session_state["nav_selection"] = pages[0]
-        if st.session_state.get("nav_selection") not in pages:
-            st.session_state["nav_selection"] = pages[0]
-
         if "nav_page" not in st.session_state:
             st.session_state["nav_page"] = st.session_state.get("page", pages[0])
-        if st.session_state.get("nav_page") not in pages + ["Quotation"]:
+        if st.session_state.get("nav_page") not in pages:
             st.session_state["nav_page"] = pages[0]
 
-        previous_choice = st.session_state.get(
-            "_nav_previous_choice", st.session_state.get("nav_selection", pages[0])
-        )
-        nav_seed = (
-            st.session_state.get("nav_page")
-            if st.session_state.get("nav_page") in pages
-            else st.session_state.get("nav_selection", pages[0])
-        )
-        current_index = pages.index(nav_seed)
+        current_page = st.session_state.get("nav_page", pages[0])
+        st.session_state["nav_selection"] = current_page
         page_choice = st.radio(
-            "Navigate", pages, index=current_index, key="nav_selection"
+            "Navigate",
+            pages,
+            index=pages.index(current_page),
+            key="nav_selection",
         )
-        selection_changed = page_choice != previous_choice
-        st.session_state["_nav_previous_choice"] = page_choice
-
-        if create_quote:
-            st.session_state["nav_page"] = "Quotation"
-            st.session_state["_nav_locked_page"] = "Quotation"
-        elif selection_changed:
-            st.session_state["nav_page"] = page_choice
-            st.session_state.pop("_nav_locked_page", None)
-
-        locked_page = st.session_state.get("_nav_locked_page")
-        if locked_page:
-            st.session_state["nav_page"] = locked_page
-
-        page = st.session_state.get("nav_page", pages[0])
+        st.session_state["nav_page"] = page_choice
+        page = page_choice
         st.session_state.page = page
 
     show_expiry_notifications(conn)
