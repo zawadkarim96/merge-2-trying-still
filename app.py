@@ -1132,33 +1132,64 @@ def _extract_text_from_quotation_upload(upload) -> tuple[str, list[str]]:
 
         try:
             grayscale = ImageOps.grayscale(image)
-            enhanced = ImageEnhance.Contrast(grayscale).enhance(1.8)
-            return pytesseract.image_to_string(enhanced)
+            boosted = ImageOps.autocontrast(grayscale)
+            boosted = ImageEnhance.Contrast(boosted).enhance(1.8)
+            boosted = ImageEnhance.Sharpness(boosted).enhance(1.2)
+            primary_text = pytesseract.image_to_string(boosted)
+
+            if len(primary_text.strip()) >= 12:
+                return primary_text
+
+            inverted = ImageOps.invert(grayscale)
+            inverted = ImageEnhance.Contrast(inverted).enhance(1.6)
+            alt_text = pytesseract.image_to_string(inverted)
+            return alt_text if len(alt_text.strip()) > len(primary_text.strip()) else primary_text
         except Exception as exc:  # pragma: no cover - defensive against OCR failures
             warnings.append(f"OCR failed: {exc}")
             return ""
 
     if suffix == ".pdf":
+        pages: list[str] = []
         try:
             reader = PdfReader(io.BytesIO(file_bytes))
-            pages: list[str] = []
             for page in reader.pages:
                 try:
-                    pages.append(page.extract_text() or "")
+                    text_block = page.extract_text() or ""
                 except Exception:
-                    continue
-                if not pages[-1].strip():
-                    for image_file in getattr(page, "images", []):
-                        try:
-                            pil_image = Image.open(io.BytesIO(image_file.data))
-                            pages[-1] += "\n" + _ocr_image(pil_image)
-                        except Exception:
-                            continue
+                    text_block = ""
+                image_ocr: list[str] = []
+                for image_file in getattr(page, "images", []):
+                    try:
+                        pil_image = Image.open(io.BytesIO(image_file.data))
+                        image_ocr.append(_ocr_image(pil_image))
+                    except Exception:
+                        continue
+                if image_ocr:
+                    text_block = "\n".join([text_block, *image_ocr]).strip()
+                pages.append(text_block)
             text_content = "\n".join(pages)
             if not text_content.strip():
                 warnings.append("No readable text found in the uploaded PDF.")
         except Exception as exc:  # pragma: no cover - defensive against damaged uploads
             warnings.append(f"Could not read PDF: {exc}")
+        if len(text_content.strip()) < 80:
+            try:
+                from pdf2image import convert_from_bytes
+
+                last_page = max(1, min(2, len(pages) or 2))
+                raster_pages = convert_from_bytes(
+                    file_bytes, dpi=300, first_page=1, last_page=last_page
+                )
+                extra_ocr = [_ocr_image(image) for image in raster_pages]
+                combined = "\n".join([text_content, *extra_ocr]).strip()
+                if combined:
+                    text_content = combined
+            except Exception as exc:  # pragma: no cover - optional dependency
+                warnings.append(
+                    "Add pdf2image with poppler to strengthen OCR for scanned PDFs"
+                )
+                if str(exc).strip():
+                    warnings.append(f"OCR raster fallback failed: {exc}")
     else:
         try:
             image = Image.open(io.BytesIO(file_bytes))
@@ -1259,7 +1290,75 @@ def _extract_quotation_metadata(text: str) -> dict[str, object]:
                 return match.group(1).strip()
         return None
 
-    reference = _match(
+    def _header_value(prefix: str) -> Optional[str]:
+        for line in lines:
+            if line.lower().startswith(prefix.lower()):
+                candidate = line.split(":", 1)[-1].strip()
+                return candidate or None
+        return None
+
+    def _collect_after(keyword: str, max_lines: int = 6) -> list[str]:
+        for idx, line in enumerate(lines):
+            if line.lower().startswith(keyword.lower()):
+                collected: list[str] = []
+                for entry in lines[idx + 1 : idx + 1 + max_lines]:
+                    if not entry.strip():
+                        break
+                    collected.append(entry)
+                return collected
+        return []
+
+    def _parse_amount(value: str) -> Optional[float]:
+        match = re.search(r"([1-9]\d{1,2}(?:,\d{3})*(?:\.\d+)?)", value)
+        if not match:
+            return None
+        try:
+            return float(match.group(1).replace(",", ""))
+        except ValueError:
+            return None
+
+    def _extract_price_schedule() -> list[dict[str, object]]:
+        """Capture the generator line item from the uploaded quotation."""
+
+        description_lines: list[str] = []
+        price_hint: Optional[float] = None
+        quantity_hint: float = 1.0
+
+        for idx, line in enumerate(lines):
+            if re.search(r"brand\s+new\s+diesel\s+generating\s+set", line, re.IGNORECASE):
+                # Collect nearby descriptive lines until we hit an obvious footer.
+                block: list[str] = [line]
+                for entry in lines[idx + 1 : min(len(lines), idx + 12)]:
+                    if re.search(r"total\s+amount", entry, re.IGNORECASE):
+                        break
+                    block.append(entry)
+                description_lines = [entry for entry in block if entry.strip()]
+                joined_block = " ".join(description_lines)
+                price_hint = _parse_amount(joined_block)
+                qty_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:set|pcs|piece|unit)s?", joined_block, re.IGNORECASE)
+                if qty_match:
+                    try:
+                        quantity_hint = float(qty_match.group(1))
+                    except ValueError:
+                        quantity_hint = 1.0
+                break
+
+        if not description_lines:
+            return []
+
+        cleaned_description = "; ".join(description_lines)
+        items: list[dict[str, object]] = [
+            {
+                "description": cleaned_description,
+                "model": "",
+                "quantity": quantity_hint,
+                "rate": price_hint or 0.0,
+                "discount": 0.0,
+            }
+        ]
+        return items
+
+    reference = _header_value("ref") or _match(
         [
             r"quotation\s*(?:no\.|number|#)[:#\s]*([\w/-]+)",
             r"quote\s*(?:no\.|number|#)[:#\s]*([\w/-]+)",
@@ -1275,7 +1374,7 @@ def _extract_quotation_metadata(text: str) -> dict[str, object]:
     if subject_line:
         updates["quotation_subject"] = subject_line
 
-    attention = _match(
+    attention = _header_value("attention") or _match(
         [
             r"attn\.?[:\s]*([^\n]+)",
             r"attention[:\s]*([^\n]+)",
@@ -1287,7 +1386,7 @@ def _extract_quotation_metadata(text: str) -> dict[str, object]:
         updates["quotation_attention_name"] = attention
         updates.setdefault("quotation_customer_contact_name", attention)
 
-    company = _match(
+    company = _header_value("to") or _match(
         [
             r"company[:\s]*([^\n]+)",
             r"to[:\s]*([^\n]+)",
@@ -1310,11 +1409,14 @@ def _extract_quotation_metadata(text: str) -> dict[str, object]:
             f"{existing}, {email}" if existing else email
         )
 
+    address_block = _collect_after("to")
     address = _match([r"address[:\s]*([^\n]+(?:\n[^\n]+){0,3})", r"(?:office|site)\s*address[:\s]*([^\n]+)"])
-    if address:
+    if address_block:
+        updates["quotation_customer_address"] = "\n".join(address_block)
+    elif address:
         updates["quotation_customer_address"] = address.replace("\n", " ")
 
-    detected_date = _match(
+    detected_date = _header_value("date") or _match(
         [
             r"date[:\s]*([\d./\-]+)",
             r"valid\s*(?:until|till|up to)[:\s]*([\d./\-]+)",
@@ -1340,7 +1442,7 @@ def _extract_quotation_metadata(text: str) -> dict[str, object]:
         best_total = max(parsed_totals)
         updates["quotation_detected_total"] = best_total
 
-    detected_items = _parse_line_items_from_text(lines)
+    detected_items = _extract_price_schedule() or _parse_line_items_from_text(lines)
     if detected_items:
         updates["_detected_items"] = detected_items
 
@@ -8810,20 +8912,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
 
         st.divider()
 
-        contact_cols = st.columns(2)
-        with contact_cols[0]:
-            customer_contact = st.text_input(
-                "Customer phone",
-                value=st.session_state.get("quotation_customer_contact", ""),
-                key="quotation_customer_contact",
-            )
-        with contact_cols[1]:
-            customer_email = st.text_input(
-                "Customer email",
-                value=st.session_state.get("quotation_customer_email", ""),
-                key="quotation_customer_email",
-            )
-
+        st.markdown("#### Price schedule (auto-filled when detected)")
         items_toolbar = st.columns(3)
         with items_toolbar[0]:
             add_item = st.form_submit_button("Add item", use_container_width=True)
@@ -8927,67 +9016,38 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
 
     st.session_state["quotation_item_rows"] = items_editor.to_dict("records")
 
-    detail_cols = st.columns(2)
-    with detail_cols[0]:
-        terms_notes = st.text_area(
-            "Special notes / terms & conditions",
-            value=st.session_state.get("quotation_terms", ""),
-            key="quotation_terms",
-        )
-        status_value = st.selectbox(
-            "Quotation status",
-            status_choices,
-            format_func=lambda val: val.title(),
-            key="quotation_status",
-        )
-    with detail_cols[1]:
-        st.markdown("**Salesperson (from your profile)**")
-        prepared_by = st.text_input(
-            "Name",
-            value=salesperson_profile.get("name", ""),
-            key="quotation_prepared_by",
-            disabled=True,
-        )
-        salesperson_title = st.text_input(
-            "Title / designation",
-            value=salesperson_profile.get("title", ""),
-            key="quotation_salesperson_title",
-            disabled=True,
-        )
-        salesperson_contact = st.text_input(
-            "Phone",
-            value=salesperson_profile.get("phone", ""),
-            key="quotation_salesperson_contact",
-            disabled=True,
-        )
-        salesperson_email = st.text_input(
-            "Email",
-            value=salesperson_profile.get("email", ""),
-            key="quotation_salesperson_email",
-            disabled=True,
-        )
+    terms_notes = st.text_area(
+        "Special notes / terms & conditions",
+        value=st.session_state.get("quotation_terms", ""),
+        key="quotation_terms",
+    )
 
-        quote_type = "Standard"
-        default_discount = 0.0
-        customer_district = st.session_state.get("quotation_customer_district", "")
-        attention_title = st.session_state.get("quotation_attention_title", "")
-        admin_notes = terms_notes
-        follow_up_status = "Pending"
-        follow_up_notes = ""
-        follow_up_choice = None
-        follow_up_date_value = None
+    quote_type = "Standard"
+    default_discount = 0.0
+    customer_district = st.session_state.get("quotation_customer_district", "")
+    attention_title = st.session_state.get("quotation_attention_title", "")
+    admin_notes = terms_notes
+    follow_up_status = "Pending"
+    follow_up_notes = ""
+    follow_up_choice = None
+    follow_up_date_value = None
+    status_value = "pending"
+    salesperson_title = salesperson_profile.get("title", "")
+    salesperson_contact = salesperson_profile.get("phone", "")
+    salesperson_email = salesperson_profile.get("email", "")
+    prepared_by = salesperson_profile.get("name", "")
 
-        action_cols = st.columns([1, 1])
-        reset = action_cols[1].form_submit_button("Reset form")
-        submit = action_cols[0].form_submit_button("Save quotation", type="primary")
+    action_cols = st.columns([1, 1])
+    reset = action_cols[1].form_submit_button("Reset form")
+    submit = action_cols[0].form_submit_button("Save quotation", type="primary")
 
-        if reset:
-            _reset_quotation_form_state()
-            st.session_state["quotation_feedback"] = (
-                "info",
-                "Quotation form reset to defaults.",
-            )
-            _safe_rerun()
+    if reset:
+        _reset_quotation_form_state()
+        st.session_state["quotation_feedback"] = (
+            "info",
+            "Quotation form reset to defaults.",
+        )
+        _safe_rerun()
 
     if st.session_state.get("quotation_autofill_customer"):
         seed = autofill_records.get(int(st.session_state["quotation_autofill_customer"]))
@@ -9028,7 +9088,9 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             reminder_label = f"Reminder scheduled in {reminder_days} days on {follow_up_label}."
         grand_total_value = totals_data["grand_total"]
 
-        customer_contact_combined = dedupe_join([customer_contact, customer_email], " / ")
+        customer_contact_combined = dedupe_join(
+            [st.session_state.get("quotation_customer_contact"), attention_name], " / "
+        )
 
         metadata = OrderedDict()
         metadata["Reference number"] = reference_value
