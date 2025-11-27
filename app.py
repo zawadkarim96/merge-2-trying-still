@@ -8629,259 +8629,179 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         "Custom date": None,
     }
 
-    template_choice = "Default letterhead"
     st.session_state["quotation_autofill_customer"] = None
-
-    resolved_render_id = render_id or st.session_state.get("quotation_overlay_render_id")
-    if not resolved_render_id:
-        resolved_render_id = int(time.time())
-    st.session_state["quotation_overlay_render_id"] = resolved_render_id
-    render_id = resolved_render_id
-
-    template_path = _resolve_letterhead_path(template_choice)
-    overlay_bg = (
-        f"background-image: url('file://{template_path}');"
-        if template_path
-        else "background-color: #f8fafc;"
+    st.markdown("### Upload to auto-fill")
+    st.caption(
+        "Upload a quotation (PDF, DOCX, or TXT) to detect customer info, contact details, and line items automatically."
     )
-    overlay_root = (
-        f"div[data-testid=\"stVerticalBlock\"]:has(> .letterhead-wrapper-{render_id})"
-    )
-    overlay = st.container()
-    overlay.markdown(
-        f"""
-        <style>
-          {overlay_root} {{
-              position: relative;
-              margin: 0 auto 1.5rem auto;
-              width: 800px;
-              aspect-ratio: 210 / 297;
-              {overlay_bg}
-              background-size: contain;
-              background-repeat: no-repeat;
-              background-position: top center;
-              border-radius: 12px;
-              box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
-              overflow: hidden;
-              min-height: 1100px;
-              isolation: isolate;
-          }}
-          {overlay_root} > div {{
-              margin: 0 !important;
-              padding: 0 !important;
-          }}
-          {overlay_root} .field-anchor {{
-              position: absolute;
-              pointer-events: none;
-              inset: auto;
-          }}
-          {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] {{
-              position: absolute;
-          }}
-          {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stTextInput > div > input,
-          {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stDateInput input,
-          {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stNumberInput input,
-          {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
-              background: rgba(255, 255, 255, 0.9);
-              border: 0;
-              border-bottom: 1px dashed #94a3b8;
-              border-radius: 8px;
-              box-shadow: none;
-              padding: 6px 8px;
-              font-size: 14px;
-              color: #0f172a;
-          }}
-          {overlay_root} .field-anchor + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
-              min-height: 64px;
-          }}
-          {overlay_root} .date-field-{render_id},
-          {overlay_root} .date-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-              top: 72px;
-              left: 520px;
-              width: 200px;
-          }}
-          {overlay_root} .ref-field-{render_id},
-          {overlay_root} .ref-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-              top: 110px;
-              left: 500px;
-              width: 230px;
-          }}
-          {overlay_root} .company-field-{render_id},
-          {overlay_root} .company-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-              top: 178px;
-              left: 80px;
-              width: 540px;
-          }}
-          {overlay_root} .contact-field-{render_id},
-          {overlay_root} .contact-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-              top: 206px;
-              left: 80px;
-              width: 520px;
-          }}
-          {overlay_root} .attention-field-{render_id},
-          {overlay_root} .attention-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-              top: 236px;
-              left: 80px;
-              width: 480px;
-          }}
-          {overlay_root} .address-field-{render_id},
-          {overlay_root} .address-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-              top: 304px;
-              left: 80px;
-              width: 640px;
-          }}
-          {overlay_root} .address-field-{render_id} + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
-              min-height: 100px;
-          }}
-        </style>
-        <div class="letterhead-overlay-marker-{render_id} letterhead-wrapper-{render_id}"></div>
-        """,
-        unsafe_allow_html=True,
+    prefill_upload = st.file_uploader(
+        "Quotation file",
+        type=["pdf", "doc", "docx", "txt"],
+        key="quotation_prefill_upload",
     )
 
-    if not template_path:
-        overlay.warning(
-            "Letterhead template missing. Upload ps_letterhead.png to render the overlay background."
-        )
+    if prefill_upload:
+        text, warnings = _extract_text_from_quotation_upload(prefill_upload)
+        for warning in warnings:
+            st.warning(warning)
+        updates = _extract_quotation_metadata(text)
+        detected_items = updates.pop("_detected_items", None)
+        if updates:
+            st.session_state.update(updates)
+        if detected_items:
+            st.session_state["quotation_item_rows"] = detected_items
+        if updates or detected_items:
+            st.success("Quotation fields auto-filled from the uploaded file.")
 
-    overlay.markdown(
-        f'<div class="field-anchor date-field-{render_id}"></div>',
-        unsafe_allow_html=True,
-    )
-    with overlay.container():
-        quotation_date = st.date_input(
-            "",
-            value=st.session_state.get("quotation_date") or default_date,
-            key="quotation_date",
-            label_visibility="collapsed",
-        )
+    with st.form("quotation_form"):
+        st.markdown("### Quotation details")
+        basic_cols = st.columns((1, 1))
+        with basic_cols[0]:
+            quotation_date = st.date_input(
+                "Quotation date",
+                value=st.session_state.get("quotation_date") or default_date,
+                key="quotation_date",
+            )
+            customer_company = st.text_input(
+                "Customer / Company name",
+                value=st.session_state.get("quotation_company_name", ""),
+                key="quotation_company_name",
+            )
+            customer_contact_name = st.text_input(
+                "Attention / contact person",
+                value=st.session_state.get("quotation_customer_contact_name", ""),
+                key="quotation_customer_contact_name",
+            )
+        with basic_cols[1]:
+            reference_value = st.text_input(
+                "Reference / Quotation #",
+                value=st.session_state.get("quotation_reference", ""),
+                key="quotation_reference",
+            )
+            subject_line = st.text_input(
+                "Product or project subject",
+                value=st.session_state.get("quotation_subject", ""),
+                key="quotation_subject",
+            )
+            customer_contact = st.text_input(
+                "Customer contact details (phone / email)",
+                value=st.session_state.get("quotation_customer_contact", ""),
+                key="quotation_customer_contact",
+            )
+            attention_name = st.text_input(
+                "Attention line (optional)",
+                value=st.session_state.get("quotation_attention_name", "")
+                or st.session_state.get("quotation_customer_contact_name", ""),
+                key="quotation_attention_name",
+            )
 
-    overlay.markdown(
-        f'<div class="field-anchor ref-field-{render_id}"></div>',
-        unsafe_allow_html=True,
-    )
-    with overlay.container():
-        reference_value = st.text_input(
-            "",
-            value=st.session_state.get("quotation_reference", ""),
-            key="quotation_reference",
-            label_visibility="collapsed",
-        )
-
-    overlay.markdown(
-        f'<div class="field-anchor company-field-{render_id}"></div>',
-        unsafe_allow_html=True,
-    )
-    with overlay.container():
-        customer_company = st.text_input(
-            "",
-            value=st.session_state.get("quotation_company_name", ""),
-            key="quotation_company_name",
-            label_visibility="collapsed",
-        )
-
-    overlay.markdown(
-        f'<div class="field-anchor contact-field-{render_id}"></div>',
-        unsafe_allow_html=True,
-    )
-    with overlay.container():
-        customer_contact_name = st.text_input(
-            "",
-            value=st.session_state.get("quotation_customer_contact_name", ""),
-            key="quotation_customer_contact_name",
-            label_visibility="collapsed",
-        )
-
-    overlay.markdown(
-        f'<div class="field-anchor attention-field-{render_id}"></div>',
-        unsafe_allow_html=True,
-    )
-    with overlay.container():
-        attention_name = st.text_input(
-            "",
-            value=st.session_state.get("quotation_attention_name", ""),
-            key="quotation_attention_name",
-            label_visibility="collapsed",
-        )
-
-    overlay.markdown(
-        f'<div class="field-anchor address-field-{render_id}"></div>',
-        unsafe_allow_html=True,
-    )
-    with overlay.container():
         customer_address = st.text_area(
-            "",
+            "Delivery location / address",
             value=st.session_state.get("quotation_customer_address", ""),
             key="quotation_customer_address",
-            label_visibility="collapsed",
         )
 
-    subject_line = st.session_state.get("quotation_subject", "")
-    salutation = ""
-    intro_text = ""
-    closing_text = ""
-
-    st.session_state["quotation_item_rows"] = []
-
-    terms_notes = st.text_area(
-        "Special notes / terms & conditions",
-        value=st.session_state.get("quotation_terms", ""),
-        key="quotation_terms",
-    )
-
-    st.markdown("#### Admin follow-up")
-    follow_cols = st.columns((1, 1))
-    follow_statuses = ["Pending", "Hot", "Possible", "Closed"]
-    saved_follow_status = clean_text(st.session_state.get("quotation_follow_up_status"))
-    follow_status_default = saved_follow_status.title() if saved_follow_status else "Pending"
-    follow_status_default = (
-        follow_status_default if follow_status_default in follow_statuses else "Pending"
-    )
-    with follow_cols[0]:
-        follow_up_status = st.selectbox(
-            "Follow-up status",
-            follow_statuses,
-            index=follow_statuses.index(follow_status_default),
-            key="quotation_follow_up_status",
-            help="Visible to admins for tracking next steps.",
+        st.markdown("### Product / service details")
+        item_rows = st.session_state.get("quotation_item_rows") or _default_quotation_items()
+        items_df = st.data_editor(
+            pd.DataFrame(item_rows),
+            hide_index=True,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="quotation_items_editor",
+            column_config={
+                "description": st.column_config.TextColumn("Description", required=True),
+                "model": st.column_config.TextColumn("Model / specs", default=""),
+                "quantity": st.column_config.NumberColumn("Quantity", min_value=0.0, step=1.0),
+                "rate": st.column_config.NumberColumn("Unit price", min_value=0.0, step=100.0),
+                "discount": st.column_config.NumberColumn("Discount (%)", min_value=0.0, max_value=100.0),
+                "note": st.column_config.TextColumn("Notes", default=""),
+            },
         )
-    with follow_cols[1]:
-        enable_follow_date = st.checkbox(
-            "Set follow-up date",
-            value=bool(st.session_state.get("quotation_follow_up_date")),
-            key="quotation_follow_up_date_toggle",
+        if isinstance(items_df, pd.DataFrame):
+            st.session_state["quotation_item_rows"] = items_df.fillna("").to_dict("records")
+
+        terms_notes = st.text_area(
+            "Special notes / terms & conditions",
+            value=st.session_state.get("quotation_terms", ""),
+            key="quotation_terms",
         )
-        follow_up_date_value = None
-        if enable_follow_date:
-            follow_up_date_value = st.date_input(
-                "Next follow-up date",
-                value=st.session_state.get("quotation_follow_up_date")
-                or datetime.now().date(),
-                key="quotation_follow_up_date",
+
+        st.markdown("#### Admin follow-up")
+        follow_cols = st.columns((1, 1))
+        follow_statuses = ["Pending", "Hot", "Possible", "Closed"]
+        saved_follow_status = clean_text(st.session_state.get("quotation_follow_up_status"))
+        follow_status_default = saved_follow_status.title() if saved_follow_status else "Pending"
+        follow_status_default = (
+            follow_status_default if follow_status_default in follow_statuses else "Pending"
+        )
+        with follow_cols[0]:
+            follow_up_status = st.selectbox(
+                "Follow-up status",
+                follow_statuses,
+                index=follow_statuses.index(follow_status_default),
+                key="quotation_follow_up_status",
+                help="Visible to admins for tracking next steps.",
             )
-    follow_up_notes = st.text_area(
-        "Follow-up remarks for admins",
-        value=st.session_state.get("quotation_follow_up_notes", ""),
-        key="quotation_follow_up_notes",
-        help="Internal notes that help admins continue the conversation.",
-    )
+            status_value = st.selectbox(
+                "Quotation status",
+                status_choices,
+                index=status_choices.index(clean_text(st.session_state.get("quotation_status")) or "pending")
+                if clean_text(st.session_state.get("quotation_status")) in status_choices
+                else 0,
+                key="quotation_status",
+            )
+        with follow_cols[1]:
+            follow_up_choice = st.selectbox(
+                "Reminder preset",
+                list(follow_up_presets.keys()),
+                index=1,
+                key="quotation_follow_up_choice",
+            )
+            enable_follow_date = st.checkbox(
+                "Set follow-up date",
+                value=bool(st.session_state.get("quotation_follow_up_date")),
+                key="quotation_follow_up_date_toggle",
+            )
+            follow_up_date_value = None
+            if enable_follow_date:
+                follow_up_date_value = st.date_input(
+                    "Next follow-up date",
+                    value=st.session_state.get("quotation_follow_up_date")
+                    or datetime.now().date(),
+                    key="quotation_follow_up_date",
+                )
+        follow_up_notes = st.text_area(
+            "Follow-up remarks for admins",
+            value=st.session_state.get("quotation_follow_up_notes", ""),
+            key="quotation_follow_up_notes",
+            help="Internal notes that help admins continue the conversation.",
+        )
 
-    quote_type = "Standard"
-    default_discount = 0.0
+        form_actions = st.columns((1, 1))
+        submit = form_actions[0].form_submit_button("Save quotation", type="primary")
+        reset = form_actions[1].form_submit_button("Reset form")
+
+    template_choice = "Default letterhead"
+    quote_type = st.session_state.get("quotation_quote_type", "Standard")
+    default_discount = _coerce_float(
+        st.session_state.get("quotation_discount_default"), 0.0
+    )
     customer_district = st.session_state.get("quotation_customer_district", "")
     attention_title = st.session_state.get("quotation_attention_title", "")
     admin_notes = terms_notes
-    follow_up_choice = None
-    status_value = "pending"
+    follow_up_choice = st.session_state.get("quotation_follow_up_choice")
+    status_value = clean_text(st.session_state.get("quotation_status")) or "pending"
     salesperson_title = salesperson_profile.get("title", "")
     salesperson_contact = salesperson_profile.get("phone", "")
     salesperson_email = salesperson_profile.get("email", "")
-    prepared_by = salesperson_profile.get("name", "")
-
-    action_cols = st.columns([1, 1])
-    reset = action_cols[1].button("Reset form")
-    submit = action_cols[0].button("Save quotation", type="primary")
-
+    prepared_by = (
+        st.session_state.get("quotation_prepared_by") or salesperson_profile.get("name", "")
+    )
+    salutation = st.session_state.get("quotation_salutation", "")
+    intro_text = st.session_state.get("quotation_introduction", "")
+    closing_text = st.session_state.get("quotation_closing", "")
+    attention_name = st.session_state.get("quotation_attention_name", attention_name)
     if reset:
         _reset_quotation_form_state()
         st.session_state["quotation_feedback"] = (
