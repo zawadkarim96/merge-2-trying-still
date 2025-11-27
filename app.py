@@ -13721,7 +13721,10 @@ def main():
             st.session_state["nav_page"] = pages[0]
 
         current_page = st.session_state.get("nav_page", pages[0])
-        st.session_state["nav_selection"] = current_page
+        if "nav_selection" not in st.session_state:
+            st.session_state["nav_selection"] = current_page
+        if st.session_state.get("nav_selection") not in pages:
+            st.session_state["nav_selection"] = current_page
         page_choice = st.radio(
             "Navigate",
             pages,
