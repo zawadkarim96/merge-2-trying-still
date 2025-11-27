@@ -71,6 +71,7 @@ CUSTOMER_DOCS_DIR = UPLOADS_DIR / "customer_documents"
 SERVICE_BILL_DIR = UPLOADS_DIR / "service_bills"
 REPORT_DOCS_DIR = UPLOADS_DIR / "report_documents"
 QUOTATION_RECEIPT_DIR = UPLOADS_DIR / "quotation_receipts"
+QUOTATION_DOCS_DIR = UPLOADS_DIR / "quotation_documents"
 DELIVERY_RECEIPT_DIR = UPLOADS_DIR / "delivery_receipts"
 QUOTATION_EDITOR_PORT = int(os.getenv("QUOTATION_EDITOR_PORT", "8502"))
 
@@ -2743,6 +2744,8 @@ def _reset_quotation_form_state() -> None:
         "quotation_reminder_label",
         "quotation_customer_contact_name",
         "quotation_receipt_upload",
+        "quotation_document_path",
+        "quotation_payment_receipt_path",
         "quotation_manual_total",
     ]:
         st.session_state.pop(key, None)
@@ -2788,6 +2791,7 @@ def ensure_upload_dirs():
         SERVICE_BILL_DIR,
         REPORT_DOCS_DIR,
         QUOTATION_RECEIPT_DIR,
+        QUOTATION_DOCS_DIR,
         DELIVERY_RECEIPT_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)
@@ -8704,6 +8708,20 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         text, warnings = _extract_text_from_quotation_upload(prefill_upload)
         for warning in warnings:
             st.warning(warning)
+        saved_prefill = save_uploaded_file(
+            prefill_upload,
+            QUOTATION_DOCS_DIR,
+            filename=prefill_upload.name or "quotation_upload",
+            allowed_extensions={".pdf", ".doc", ".docx", ".txt"},
+            default_extension=".pdf",
+        )
+        if saved_prefill:
+            try:
+                st.session_state["quotation_document_path"] = str(
+                    saved_prefill.relative_to(BASE_DIR)
+                )
+            except ValueError:
+                st.session_state["quotation_document_path"] = str(saved_prefill)
         updates = _extract_quotation_metadata(text)
         detected_items = updates.pop("_detected_items", None)
         if updates:
@@ -8859,6 +8877,25 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                     or datetime.now().date(),
                     key="quotation_follow_up_date",
                 )
+        receipt_upload = None
+        existing_receipt_path = st.session_state.get("quotation_payment_receipt_path")
+        if status_value == "paid":
+            receipt_upload = st.file_uploader(
+                "Upload payment receipt (required for paid status)",
+                type=["pdf", "png", "jpg", "jpeg", "webp"],
+                key="quotation_receipt_upload",
+            )
+            if receipt_upload:
+                safe_ref = _sanitize_path_component(reference_value) or f"quotation_{quotation_date.strftime('%Y%m%d')}"
+                saved_receipt = store_payment_receipt(
+                    receipt_upload, identifier=f"{safe_ref}_receipt"
+                )
+                if saved_receipt:
+                    st.session_state["quotation_payment_receipt_path"] = saved_receipt
+            elif existing_receipt_path:
+                st.caption("Using the previously uploaded receipt for this quotation.")
+            else:
+                st.caption("Attach the receipt before saving a paid quotation.")
         follow_up_notes = st.text_area(
             "Follow-up remarks for admins",
             value=st.session_state.get("quotation_follow_up_notes", ""),
@@ -8915,6 +8952,10 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         reminder_label = None
         if follow_up_label and reminder_days is not None:
             reminder_label = f"Reminder scheduled in {reminder_days} days on {follow_up_label}."
+        receipt_path = st.session_state.get("quotation_payment_receipt_path")
+        if status_value == "paid" and not receipt_path:
+            st.error("Upload a payment receipt before saving a paid quotation.")
+            return
         manual_total_override = max(
             _coerce_float(manual_total_value, 0.0),
             0.0,
@@ -9019,6 +9060,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             "total_amount": grand_total_value,
             "discount_pct": default_discount,
             "status": status_value,
+            "payment_receipt_path": receipt_path,
             "follow_up_status": follow_up_status,
             "follow_up_notes": follow_up_notes,
             "follow_up_date": follow_up_iso,
@@ -9028,6 +9070,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             "salesperson_title": salesperson_title,
             "salesperson_contact": salesperson_contact,
             "salesperson_email": salesperson_email,
+            "document_path": st.session_state.get("quotation_document_path"),
             "remarks_internal": terms_notes,
             "created_by": current_user_id(),
         }
@@ -9064,15 +9107,6 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
 
         grand_total_label = format_money(result["grand_total"]) or f"{result['grand_total']:,.2f}"
         st.markdown(f"**Grand total:** {grand_total_label}")
-        if result.get("reminder_label"):
-            st.caption(result.get("reminder_label"))
-
-        _render_letterhead_preview(
-            result.get("metadata", {}),
-            grand_total_label,
-            template_choice=result.get("letter_template")
-            or st.session_state.get("quotation_letter_template"),
-        )
 
         record_id = result.get("record_id")
         if record_id:
@@ -9087,14 +9121,6 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                 """
             )
             st.markdown(editor_button, unsafe_allow_html=True)
-
-        st.download_button(
-            "Download quotation",
-            data=result["excel_bytes"],
-            file_name=result["filename"],
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="quotation_download",
-        )
 
 
 def _render_quotation_management(conn):
