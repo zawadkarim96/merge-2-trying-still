@@ -2729,6 +2729,7 @@ def _reset_quotation_form_state() -> None:
         "quotation_follow_up_status",
         "quotation_follow_up_notes",
         "quotation_follow_up_date",
+        "quotation_follow_up_date_toggle",
         "quotation_follow_up_choice",
         "quotation_salesperson_title",
         "quotation_salesperson_contact",
@@ -4880,6 +4881,106 @@ def dashboard(conn):
                     else:
                         cols[3].caption("File missing")
                 st.markdown("</div>", unsafe_allow_html=True)
+
+        uploaded_quotes = df_query(
+            conn,
+            dedent(
+                """
+                SELECT q.quotation_id,
+                       q.reference,
+                       q.customer_company,
+                       q.customer_name,
+                       q.customer_contact,
+                       q.total_amount,
+                       q.status,
+                       q.quote_date,
+                       q.document_path,
+                       q.follow_up_status,
+                       q.follow_up_date,
+                       q.follow_up_notes,
+                       q.salesperson_name,
+                       q.updated_at,
+                       COALESCE(u.username, 'User #' || q.created_by) AS owner
+                FROM quotations q
+                LEFT JOIN users u ON u.user_id = q.created_by
+                WHERE q.document_path IS NOT NULL AND q.document_path != ''
+                ORDER BY datetime(q.updated_at) DESC, datetime(q.quote_date) DESC, q.quotation_id DESC
+                LIMIT 12
+                """
+            ),
+        )
+
+        if not uploaded_quotes.empty:
+            uploaded_quotes = fmt_dates(
+                uploaded_quotes, ["quote_date", "follow_up_date", "updated_at"]
+            )
+            uploaded_quotes["quotation_id"] = uploaded_quotes["quotation_id"].apply(
+                lambda value: int(_coerce_float(value, 0))
+            )
+            st.markdown("#### Uploaded quotation details")
+            option_labels = {
+                int(row["quotation_id"]): (
+                    f"{clean_text(row.get('reference')) or 'Quotation'} • "
+                    f"{clean_text(row.get('customer_company')) or clean_text(row.get('customer_name')) or 'Customer'}"
+                )
+                for _, row in uploaded_quotes.iterrows()
+            }
+            quote_options = list(option_labels.keys())
+            selected_quote_id = st.selectbox(
+                "Select a quotation to inspect",
+                quote_options,
+                format_func=lambda qid: option_labels.get(qid, f"Quotation #{qid}"),
+                key="dashboard_uploaded_quote_selector",
+            )
+
+            quote_match = uploaded_quotes[
+                uploaded_quotes["quotation_id"] == selected_quote_id
+            ].iloc[0]
+            left, right = st.columns((2, 1))
+            customer_lines = [
+                f"**Customer:** {clean_text(quote_match.get('customer_company')) or clean_text(quote_match.get('customer_name')) or '—'}",
+                f"**Contact:** {clean_text(quote_match.get('customer_contact')) or '—'}",
+            ]
+            if quote_match.get("follow_up_status"):
+                follow_label = clean_text(quote_match.get("follow_up_status"))
+                follow_date = clean_text(quote_match.get("follow_up_date")) or "—"
+                customer_lines.append(
+                    f"**Follow-up:** {follow_label.title()} • {follow_date}"
+                )
+            if quote_match.get("follow_up_notes"):
+                customer_lines.append(
+                    f"**Admin remarks:** {clean_text(quote_match.get('follow_up_notes'))}"
+                )
+            left.markdown("\n".join(customer_lines))
+
+            status_label = clean_text(quote_match.get("status")) or "Pending"
+            amount_label = format_money(quote_match.get("total_amount")) or f"{_coerce_float(quote_match.get('total_amount'), 0.0):,.2f}"
+            right.metric("Total (BDT)", amount_label, help=f"Status: {status_label.title()}")
+            right.caption(
+                f"Sales: {clean_text(quote_match.get('salesperson_name')) or clean_text(quote_match.get('owner')) or '—'}"
+            )
+            right.caption(
+                f"Last updated {format_time_ago(quote_match.get('updated_at')) or quote_match.get('updated_at') or '—'}"
+            )
+
+            doc_path = clean_text(quote_match.get("document_path"))
+            resolved_path = resolve_upload_path(doc_path)
+            if resolved_path and resolved_path.exists():
+                try:
+                    payload = resolved_path.read_bytes()
+                except OSError:
+                    payload = None
+                if payload:
+                    st.download_button(
+                        "Download uploaded quotation",
+                        payload,
+                        file_name=resolved_path.name,
+                        key=f"dashboard_quote_download_{selected_quote_id}",
+                    )
+                else:
+                    st.warning("The uploaded quotation file could not be read.", icon="⚠️")
+            else:
+                st.caption("Uploaded quotation file not found on disk.")
 
     quote_scope, quote_params = _quotation_scope_filter()
     quote_clause = quote_scope.replace("WHERE", "WHERE", 1)
@@ -8569,7 +8670,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         "Custom date": None,
     }
 
-    with st.form("quotation_form"):
+    with st.container():
         header_cols = st.columns((1.25, 0.75))
         with header_cols[0]:
             st.caption("Compose, save and track quotations from a single workspace.")
@@ -8598,7 +8699,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             )
         with upload_cols[1]:
             st.caption(
-                "Uploads can auto-fill the reference, date, customer details, and totals when detected."
+                "Uploads can auto-fill the reference, date, customer details, product lines (with quantity & rate), and totals when detected."
             )
 
         upload_signature = None
@@ -8915,11 +9016,11 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         st.markdown("#### Price schedule (auto-filled when detected)")
         items_toolbar = st.columns(3)
         with items_toolbar[0]:
-            add_item = st.form_submit_button("Add item", use_container_width=True)
+            add_item = st.button("Add item", use_container_width=True)
         with items_toolbar[1]:
-            clear_items = st.form_submit_button("Clear items", use_container_width=True)
+            clear_items = st.button("Clear items", use_container_width=True)
         with items_toolbar[2]:
-            reset_items = st.form_submit_button("Reset defaults", use_container_width=True)
+            reset_items = st.button("Reset defaults", use_container_width=True)
         if add_item:
             st.session_state["quotation_item_rows"].append(_default_quotation_items()[0])
         if clear_items:
@@ -9022,24 +9123,58 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         key="quotation_terms",
     )
 
+    st.markdown("#### Admin follow-up")
+    follow_cols = st.columns((1, 1))
+    follow_statuses = ["Pending", "Hot", "Possible", "Closed"]
+    saved_follow_status = clean_text(st.session_state.get("quotation_follow_up_status"))
+    follow_status_default = saved_follow_status.title() if saved_follow_status else "Pending"
+    follow_status_default = (
+        follow_status_default if follow_status_default in follow_statuses else "Pending"
+    )
+    with follow_cols[0]:
+        follow_up_status = st.selectbox(
+            "Follow-up status",
+            follow_statuses,
+            index=follow_statuses.index(follow_status_default),
+            key="quotation_follow_up_status",
+            help="Visible to admins for tracking next steps.",
+        )
+    with follow_cols[1]:
+        enable_follow_date = st.checkbox(
+            "Set follow-up date",
+            value=bool(st.session_state.get("quotation_follow_up_date")),
+            key="quotation_follow_up_date_toggle",
+        )
+        follow_up_date_value = None
+        if enable_follow_date:
+            follow_up_date_value = st.date_input(
+                "Next follow-up date",
+                value=st.session_state.get("quotation_follow_up_date")
+                or datetime.now().date(),
+                key="quotation_follow_up_date",
+            )
+    follow_up_notes = st.text_area(
+        "Follow-up remarks for admins",
+        value=st.session_state.get("quotation_follow_up_notes", ""),
+        key="quotation_follow_up_notes",
+        help="Internal notes that help admins continue the conversation.",
+    )
+
     quote_type = "Standard"
     default_discount = 0.0
     customer_district = st.session_state.get("quotation_customer_district", "")
     attention_title = st.session_state.get("quotation_attention_title", "")
     admin_notes = terms_notes
-    follow_up_status = "Pending"
-    follow_up_notes = ""
     follow_up_choice = None
-    follow_up_date_value = None
     status_value = "pending"
     salesperson_title = salesperson_profile.get("title", "")
     salesperson_contact = salesperson_profile.get("phone", "")
     salesperson_email = salesperson_profile.get("email", "")
     prepared_by = salesperson_profile.get("name", "")
 
-    action_cols = st.columns([1, 1])
-    reset = action_cols[1].form_submit_button("Reset form")
-    submit = action_cols[0].form_submit_button("Save quotation", type="primary")
+        action_cols = st.columns([1, 1])
+        reset = action_cols[1].button("Reset form")
+        submit = action_cols[0].button("Save quotation", type="primary")
 
     if reset:
         _reset_quotation_form_state()
