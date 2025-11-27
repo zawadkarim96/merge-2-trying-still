@@ -9172,9 +9172,9 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
     salesperson_email = salesperson_profile.get("email", "")
     prepared_by = salesperson_profile.get("name", "")
 
-        action_cols = st.columns([1, 1])
-        reset = action_cols[1].button("Reset form")
-        submit = action_cols[0].button("Save quotation", type="primary")
+    action_cols = st.columns([1, 1])
+    reset = action_cols[1].button("Reset form")
+    submit = action_cols[0].button("Save quotation", type="primary")
 
     if reset:
         _reset_quotation_form_state()
