@@ -2622,15 +2622,8 @@ def _default_quotation_items() -> list[dict[str, object]]:
     return [
         {
             "description": "",
-            "hsn": "",
-            "unit": "",
-            "model": "",
-            "kva": "",
-            "specs": "",
-            "note": "",
             "quantity": 1.0,
             "rate": 0.0,
-            "discount": 0.0,
         }
     ]
 
@@ -7855,7 +7848,6 @@ def _build_quotation_pdf(
         )
     )
 
-    subject = metadata.get("Subject") or metadata.get("Subject / scope") or "Quotation"
     reference = metadata.get("Reference number") or metadata.get("Quotation reference") or "—"
     date_value = metadata.get("Date") or "—"
     customer_name = metadata.get("Customer company") or metadata.get("Customer / organisation") or "—"
@@ -7868,8 +7860,6 @@ def _build_quotation_pdf(
     prepared_title = metadata.get("Salesperson title") or ""
     prepared_contact = metadata.get("Salesperson contact") or ""
     prepared_email = metadata.get("Salesperson email") or ""
-    intro = metadata.get("Introduction") or "We thank you for your inquiry and are pleased to submit our best proposal as desired."
-    closing = metadata.get("Closing / thanks") or metadata.get("Closing") or "With Thanks & Kind Regards"
     terms = metadata.get("Notes / terms") or ""
 
     story: list[object] = []
@@ -7933,10 +7923,6 @@ def _build_quotation_pdf(
         )
     )
     story.append(Spacer(1, 8))
-    story.append(Paragraph(f"<b>Subject:</b> {subject}", styles["BodySmall"]))
-    story.append(Spacer(1, 12))
-    story.append(Paragraph(intro, styles["BodySmall"]))
-    story.append(Spacer(1, 12))
     story.append(
         Paragraph(
             "<b>PRICE SCHEDULE</b>",
@@ -8047,9 +8033,7 @@ def _build_quotation_pdf(
         story.append(Paragraph("<b>Terms & Conditions</b>", styles["BodySmall"]))
         story.append(Spacer(1, 4))
         story.append(Paragraph(html.escape(terms).replace("\n", "<br/>"), styles["BodySmall"]))
-    story.append(Spacer(1, 16))
-    story.append(Paragraph(closing, styles["BodySmall"]))
-    story.append(Spacer(1, 30))
+    story.append(Spacer(1, 24))
     story.append(Paragraph(prepared_by, styles["BodySmall"]))
     if prepared_title:
         story.append(Paragraph(prepared_title, styles["BodySmall"]))
@@ -8151,13 +8135,6 @@ def _render_letterhead_preview(
         else "Add item pricing to calculate totals"
     )
 
-    subject = html.escape(
-        str(
-            metadata.get("Subject")
-            or metadata.get("Subject / scope")
-            or "Quotation"
-        )
-    )
     customer = html.escape(
         str(
             metadata.get("Customer company")
@@ -8180,21 +8157,6 @@ def _render_letterhead_preview(
     )
     address = html.escape(str(metadata.get("Customer address") or ""))
     district = html.escape(str(metadata.get("Customer district") or ""))
-    salutation = html.escape(str(metadata.get("Salutation") or "Dear Sir,"))
-    intro = html.escape(
-        str(
-            metadata.get("Introduction")
-            or metadata.get("Introduction / cover paragraph")
-            or "We thank you for your inquiry and are pleased to submit our best proposal as desired."
-        )
-    )
-    closing = html.escape(
-        str(
-            metadata.get("Closing / thanks")
-            or metadata.get("Closing")
-            or "With Thanks & Kind Regards"
-        )
-    )
     date_value = html.escape(str(metadata.get("Date") or ""))
     prepared_by = html.escape(str(metadata.get("Salesperson name") or ""))
     prepared_title = html.escape(str(metadata.get("Salesperson title") or ""))
@@ -8277,8 +8239,6 @@ def _render_letterhead_preview(
                 <div>{address_block or '—'}</div>
               </div>
               <div style="margin-top: 8px; font-size: 13px;"><strong>Attention:</strong> {attention_name or '—'}</div>
-              <div style="margin-top: 10px; font-size: 13px;"><strong>Subject:</strong> {subject}</div>
-              <div style="margin-top: 12px; font-size: 13px; line-height: 1.65;">{salutation} {intro}</div>
               <div style="margin-top: 14px; font-size: 13px; font-weight: 700;">PRICE SCHEDULE</div>
               <table style="width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 12.5px;">
                 <thead>
@@ -8297,7 +8257,6 @@ def _render_letterhead_preview(
               </table>
               {f"<div style='margin-top: 8px; font-size: 12px; color:#475569;'>Discount applied: {discount_label} (reflected above)</div>" if discount_label else ''}
               <div style="margin-top: 10px; font-size: 13px;">In Words: {grand_total_words}</div>
-              <div style="margin-top: 18px; font-size: 13px; line-height: 1.6;">{closing}</div>
               <div style="margin-top: 40px; font-size: 13px; line-height: 1.4;">
                 <div>{prepared_by or ''}</div>
                 <div>{prepared_title or ''}</div>
@@ -8673,15 +8632,12 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
     with st.container():
         header_cols = st.columns((1.25, 0.75))
         with header_cols[0]:
-            st.caption("Compose, save and track quotations from a single workspace.")
             template_choice = st.selectbox(
                 "Select quotation letter",
                 ["Default letterhead", "PS letterhead"],
                 key="quotation_letter_template",
             )
         with header_cols[1]:
-            st.caption("Productivity assists")
-            st.write("Smart autofill from companies")
             selected_customer = st.selectbox(
                 "Customer details seed",
                 autofill_options,
@@ -8843,12 +8799,6 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                   left: 80px;
                   width: 480px;
               }}
-              {overlay_root} .subject-field-{render_id},
-              {overlay_root} .subject-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-                  top: 270px;
-                  left: 80px;
-                  width: 640px;
-              }}
               {overlay_root} .address-field-{render_id},
               {overlay_root} .address-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
                   top: 304px;
@@ -8857,27 +8807,6 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
               }}
               {overlay_root} .address-field-{render_id} + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
                   min-height: 100px;
-              }}
-              {overlay_root} .salutation-field-{render_id},
-              {overlay_root} .salutation-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-                  top: 420px;
-                  left: 80px;
-                  width: 320px;
-              }}
-              {overlay_root} .intro-field-{render_id},
-              {overlay_root} .intro-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-                  top: 452px;
-                  left: 80px;
-                  width: 720px;
-              }}
-              {overlay_root} .intro-field-{render_id} + div[data-testid=\"stVerticalBlock\"] .stTextArea textarea {{
-                  min-height: 120px;
-              }}
-              {overlay_root} .closing-field-{render_id},
-              {overlay_root} .closing-field-{render_id} + div[data-testid=\"stVerticalBlock\"] {{
-                  top: 940px;
-                  left: 80px;
-                  width: 360px;
               }}
             </style>
             <div class="letterhead-overlay-marker-{render_id} letterhead-wrapper-{render_id}"></div>
@@ -8951,18 +8880,6 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             )
 
         overlay.markdown(
-            f'<div class="field-anchor subject-field-{render_id}"></div>',
-            unsafe_allow_html=True,
-        )
-        with overlay.container():
-            subject_line = st.text_input(
-                "",
-                value=st.session_state.get("quotation_subject", ""),
-                key="quotation_subject",
-                label_visibility="collapsed",
-            )
-
-        overlay.markdown(
             f'<div class="field-anchor address-field-{render_id}"></div>',
             unsafe_allow_html=True,
         )
@@ -8974,42 +8891,10 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
                 label_visibility="collapsed",
             )
 
-        overlay.markdown(
-            f'<div class="field-anchor salutation-field-{render_id}"></div>',
-            unsafe_allow_html=True,
-        )
-        with overlay.container():
-            salutation = st.text_input(
-                "",
-                value=st.session_state.get("quotation_salutation") or "Dear Sir,",
-                key="quotation_salutation",
-                label_visibility="collapsed",
-            )
-
-        overlay.markdown(
-            f'<div class="field-anchor intro-field-{render_id}"></div>',
-            unsafe_allow_html=True,
-        )
-        with overlay.container():
-            intro_text = st.text_area(
-                "",
-                value=st.session_state.get("quotation_introduction")
-                or "We thank you for your inquiry and are pleased to submit our best proposal as per the below details.",
-                key="quotation_introduction",
-                label_visibility="collapsed",
-            )
-
-        overlay.markdown(
-            f'<div class="field-anchor closing-field-{render_id}"></div>',
-            unsafe_allow_html=True,
-        )
-        with overlay.container():
-            closing_text = st.text_area(
-                "",
-                value=st.session_state.get("quotation_closing") or "With Thanks & Kind Regards",
-                key="quotation_closing",
-                label_visibility="collapsed",
-            )
+        subject_line = st.session_state.get("quotation_subject", "")
+        salutation = ""
+        intro_text = ""
+        closing_text = ""
 
         st.divider()
 
@@ -9031,12 +8916,8 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         items_df_seed = pd.DataFrame(st.session_state["quotation_item_rows"])
         required_item_columns = [
             "description",
-            "model",
-            "hsn",
-            "unit",
             "quantity",
             "rate",
-            "discount",
         ]
 
         if not items_df_seed.empty:
@@ -9053,10 +8934,6 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
             items_df_seed = pd.DataFrame(_default_quotation_items())
 
     items_df_seed["description"] = items_df_seed["description"].fillna("")
-    if "model" in items_df_seed.columns:
-        items_df_seed["model"] = items_df_seed["model"].fillna("")
-    items_df_seed["hsn"] = items_df_seed["hsn"].fillna("")
-    items_df_seed["unit"] = items_df_seed["unit"].fillna("")
     items_df_seed["quantity"] = (
         pd.to_numeric(items_df_seed["quantity"], errors="coerce")
         .fillna(1.0)
@@ -9064,11 +8941,6 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
     )
     items_df_seed["rate"] = (
         pd.to_numeric(items_df_seed["rate"], errors="coerce")
-        .fillna(0.0)
-        .clip(lower=0)
-    )
-    items_df_seed["discount"] = (
-        pd.to_numeric(items_df_seed["discount"], errors="coerce")
         .fillna(0.0)
         .clip(lower=0)
     )
@@ -9081,38 +8953,23 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         use_container_width=True,
         column_config={
             "description": st.column_config.TextColumn(
-                "Tracked products",
+                "Description of Generator",
                 help="Describe the item or service",
             ),
-            "model": st.column_config.TextColumn(
-                "Model / SKU",
-                help="Optional model or catalog reference",
-            ),
-            "hsn": st.column_config.TextColumn(
-                "HSN/SAC", help="HSN/SAC code, if applicable"
-            ),
-            "unit": st.column_config.TextColumn("Unit"),
             "quantity": st.column_config.NumberColumn(
-                "Quantity",
+                "Qty.",
                 min_value=0.0,
                 step=1.0,
                 format="%.2f",
             ),
             "rate": st.column_config.NumberColumn(
-                "Rate",
+                "Unit Price, Tk.",
                 min_value=0.0,
                 step=100.0,
                 format="%.2f",
             ),
-            "discount": st.column_config.NumberColumn(
-                "Discount (%)",
-                help="Discount percentage for this line item",
-                min_value=0.0,
-                max_value=100.0,
-                step=0.5,
-                format="%.2f",
-            ),
         },
+        column_order=["description", "quantity", "rate"],
     )
 
     st.session_state["quotation_item_rows"] = items_editor.to_dict("records")
@@ -9235,11 +9092,7 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         metadata["Customer address"] = customer_address
         metadata["Customer contact"] = customer_contact_combined
         metadata["Attention name"] = attention_name
-        metadata["Subject"] = subject_line
-        metadata["Salutation"] = salutation
-        metadata["Introduction"] = intro_text
         metadata["Notes / terms"] = terms_notes
-        metadata["Closing / thanks"] = closing_text
         metadata["Salesperson name"] = prepared_by
         metadata["Salesperson title"] = salesperson_title
         metadata["Salesperson contact"] = salesperson_contact
