@@ -516,6 +516,7 @@ CREATE TABLE IF NOT EXISTS delivery_orders (
     sales_person TEXT,
     remarks TEXT,
     file_path TEXT,
+    record_type TEXT DEFAULT 'delivery_order',
     status TEXT DEFAULT 'pending',
     payment_receipt_path TEXT,
     created_at TEXT DEFAULT (datetime('now')),
@@ -756,6 +757,7 @@ def ensure_schema_upgrades(conn):
     add_column("delivery_orders", "items_payload", "TEXT")
     add_column("delivery_orders", "total_amount", "REAL")
     add_column("delivery_orders", "created_by", "INTEGER")
+    add_column("delivery_orders", "record_type", "TEXT DEFAULT 'delivery_order'")
     add_column("delivery_orders", "status", "TEXT DEFAULT 'pending'")
     add_column("delivery_orders", "payment_receipt_path", "TEXT")
     add_column("delivery_orders", "updated_at", "TEXT DEFAULT (datetime('now'))")
@@ -816,6 +818,23 @@ def ensure_schema_upgrades(conn):
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_import_history_imported_by ON import_history(imported_by)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dashboard_remarks (
+            remark_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            note TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY(user_id) REFERENCES users(user_id) ON DELETE SET NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_dashboard_remarks_created_at ON dashboard_remarks(created_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_dashboard_remarks_user ON dashboard_remarks(user_id)"
     )
     conn.execute(
         """
@@ -912,7 +931,10 @@ def accessible_customer_ids(conn) -> Optional[set[int]]:
 
 
 def filter_delivery_orders_for_view(
-    do_df: pd.DataFrame, allowed_customers: Optional[set[int]]
+    do_df: pd.DataFrame,
+    allowed_customers: Optional[set[int]],
+    *,
+    record_types: Optional[set[str]] = None,
 ) -> pd.DataFrame:
     """Limit delivery order rows to records the current user can access.
 
@@ -927,6 +949,10 @@ def filter_delivery_orders_for_view(
     viewer_id = current_user_id()
 
     def _allowed(row: pd.Series) -> bool:
+        if record_types is not None:
+            row_type = clean_text(row.get("record_type")) or "delivery_order"
+            if row_type not in record_types:
+                return False
         cust_id = row.get("customer_id")
         creator_id = row.get("created_by")
 
@@ -3538,10 +3564,11 @@ def _build_delivery_orders_export(conn) -> pd.DataFrame:
                COALESCE(c.name, '(unknown)') AS customer,
                d.description,
                d.sales_person,
-               d.remarks,
-               d.created_at
+                d.remarks,
+                d.created_at
         FROM delivery_orders d
         LEFT JOIN customers c ON c.customer_id = d.customer_id
+        WHERE COALESCE(d.record_type, 'delivery_order') = 'delivery_order'
         ORDER BY datetime(d.created_at) DESC, d.do_number DESC
         """
     )
@@ -4430,6 +4457,52 @@ def dashboard(conn):
     is_admin = user.get("role") == "admin"
     allowed_customers = accessible_customer_ids(conn)
     scope_clause, scope_params = customer_scope_filter("c")
+
+    st.markdown("#### Team remarks")
+    with st.form("dashboard_remark_form"):
+        remark_text = st.text_area(
+            "Leave a note for the admin or yourself",
+            help="Remarks are stored on this dashboard so admins can review them.",
+            key="dashboard_remark_text",
+        )
+        submit_remark = st.form_submit_button("Save remark")
+
+    if submit_remark:
+        cleaned_note = clean_text(remark_text)
+        if not cleaned_note:
+            st.warning("Please enter a remark before saving.")
+        else:
+            conn.execute(
+                "INSERT INTO dashboard_remarks (user_id, note) VALUES (?, ?)",
+                (current_user_id(), cleaned_note),
+            )
+            conn.commit()
+            st.success("Remark saved for admin visibility.")
+            st.session_state["dashboard_remark_text"] = ""
+
+    remarks_df = df_query(
+        conn,
+        dedent(
+            """
+            SELECT dr.note, dr.created_at, COALESCE(u.username, 'User') AS author
+            FROM dashboard_remarks dr
+            LEFT JOIN users u ON u.user_id = dr.user_id
+            ORDER BY datetime(dr.created_at) DESC
+            LIMIT 25
+            """
+        ),
+    )
+    if remarks_df.empty:
+        st.caption("No remarks have been added yet.")
+    else:
+        remarks_df = fmt_dates(remarks_df, ["created_at"])
+        st.dataframe(
+            remarks_df.rename(
+                columns={"note": "Remark", "created_at": "Created", "author": "Author"}
+            ),
+            hide_index=True,
+            use_container_width=True,
+        )
 
     if "show_today_expired" not in st.session_state:
         st.session_state.show_today_expired = False
@@ -6996,14 +7069,17 @@ def _render_service_section(conn, *, show_heading: bool = True):
     do_df = df_query(
         conn,
         """
-        SELECT d.do_number, d.customer_id, d.created_by, COALESCE(c.name, '(unknown)') AS customer_name, d.description, d.remarks
+        SELECT d.do_number, d.customer_id, d.created_by, COALESCE(c.name, '(unknown)') AS customer_name, d.description, d.remarks, d.record_type
         FROM delivery_orders d
         LEFT JOIN customers c ON c.customer_id = d.customer_id
+        WHERE COALESCE(d.record_type, 'delivery_order') = 'delivery_order'
         ORDER BY datetime(d.created_at) DESC
         """,
     )
     allowed_customers = accessible_customer_ids(conn)
-    do_df = filter_delivery_orders_for_view(do_df, allowed_customers)
+    do_df = filter_delivery_orders_for_view(
+        do_df, allowed_customers, record_types={"delivery_order"}
+    )
     do_options = [None]
     do_labels = {None: "No delivery order (manual entry)"}
     do_customer_map = {}
@@ -9706,6 +9782,7 @@ def advanced_search_page(conn):
             """
             SELECT do_number, description, sales_person, remarks, created_at, created_by, total_amount
             FROM delivery_orders
+            WHERE COALESCE(record_type, 'delivery_order') = 'delivery_order'
             ORDER BY datetime(created_at) DESC
             LIMIT 200
             """,
@@ -9780,14 +9857,17 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
     do_df = df_query(
         conn,
         """
-        SELECT d.do_number, d.customer_id, d.created_by, COALESCE(c.name, '(unknown)') AS customer_name, d.description, d.remarks
+        SELECT d.do_number, d.customer_id, d.created_by, COALESCE(c.name, '(unknown)') AS customer_name, d.description, d.remarks, d.record_type
         FROM delivery_orders d
         LEFT JOIN customers c ON c.customer_id = d.customer_id
+        WHERE COALESCE(d.record_type, 'delivery_order') = 'delivery_order'
         ORDER BY datetime(d.created_at) DESC
         """,
     )
     allowed_customers = accessible_customer_ids(conn)
-    do_df = filter_delivery_orders_for_view(do_df, allowed_customers)
+    do_df = filter_delivery_orders_for_view(
+        do_df, allowed_customers, record_types={"delivery_order"}
+    )
     do_options = [None]
     do_labels = {None: "No delivery order (manual entry)"}
     do_customer_map = {}
@@ -10283,7 +10363,11 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
 
 
 def delivery_orders_page(
-    conn, *, show_heading: bool = True, record_type_label: str = "Delivery order"
+    conn,
+    *,
+    show_heading: bool = True,
+    record_type_label: str = "Delivery order",
+    record_type_key: str = "delivery_order",
 ):
     if show_heading:
         st.subheader("🚚 Delivery orders")
@@ -10315,16 +10399,19 @@ def delivery_orders_page(
                    d.status,
                    d.payment_receipt_path,
                    d.updated_at,
+                   d.record_type,
                    u.username
             FROM delivery_orders d
             LEFT JOIN customers c ON c.customer_id = d.customer_id
             LEFT JOIN users u ON u.user_id = d.created_by
+            WHERE COALESCE(d.record_type, 'delivery_order') = ?
             ORDER BY datetime(d.created_at) DESC
             LIMIT 200
             """
         ),
+        (record_type_key,),
     )
-    load_labels: dict[Optional[str], str] = {None: "-- New delivery order --"}
+    load_labels: dict[Optional[str], str] = {None: f"-- New {record_label.lower()} --"}
     load_choices = [None]
     if not existing_dos.empty:
         for _, row in existing_dos.iterrows():
@@ -10341,7 +10428,7 @@ def delivery_orders_page(
 
     st.markdown(f"### Create or update a {record_label.lower()}")
     selected_existing = st.selectbox(
-        "Load existing delivery order",
+        f"Load existing {record_label.lower()}",
         load_choices,
         format_func=lambda val: load_labels.get(val, "-- New delivery order --"),
         key="do_form_loader",
@@ -10462,8 +10549,8 @@ def delivery_orders_page(
             cur = conn.cursor()
             existing = df_query(
                 conn,
-                "SELECT file_path, items_payload, total_amount, created_by, status, payment_receipt_path FROM delivery_orders WHERE do_number = ?",
-                (cleaned_number,),
+                "SELECT file_path, items_payload, total_amount, created_by, status, payment_receipt_path FROM delivery_orders WHERE do_number = ? AND COALESCE(record_type, 'delivery_order') = ?",
+                (cleaned_number, record_type_key),
             )
             stored_path = None
             existing_status = "pending"
@@ -10507,8 +10594,8 @@ def delivery_orders_page(
             if existing.empty:
                 cur.execute(
                     """
-                    INSERT INTO delivery_orders (do_number, customer_id, description, sales_person, remarks, file_path, items_payload, total_amount, created_by, status, payment_receipt_path, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    INSERT INTO delivery_orders (do_number, customer_id, description, sales_person, remarks, file_path, items_payload, total_amount, created_by, status, payment_receipt_path, updated_at, record_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
                     """,
                     (
                         cleaned_number,
@@ -10522,6 +10609,7 @@ def delivery_orders_page(
                         creator_id,
                         clean_text(status_value) or "pending",
                         receipt_path,
+                        record_type_key,
                     ),
                 )
             else:
@@ -10529,8 +10617,8 @@ def delivery_orders_page(
                 cur.execute(
                     """
                     UPDATE delivery_orders
-                       SET customer_id=?, description=?, sales_person=?, remarks=?, file_path=?, items_payload=?, total_amount=?, status=?, payment_receipt_path=COALESCE(?, payment_receipt_path), updated_at=datetime('now'), created_by=COALESCE(created_by, ?)
-                     WHERE do_number=?
+                       SET customer_id=?, description=?, sales_person=?, remarks=?, file_path=?, items_payload=?, total_amount=?, status=?, payment_receipt_path=COALESCE(?, payment_receipt_path), updated_at=datetime('now'), created_by=COALESCE(created_by, ?), record_type=?
+                     WHERE do_number=? AND COALESCE(record_type, 'delivery_order') = ?
                     """,
                     (
                         int(selected_customer) if selected_customer else None,
@@ -10543,7 +10631,9 @@ def delivery_orders_page(
                         clean_text(status_value) or existing_status,
                         receipt_path,
                         creator_id,
+                        record_type_key,
                         cleaned_number,
+                        record_type_key,
                     ),
                 )
             if selected_customer:
@@ -10573,11 +10663,13 @@ def delivery_orders_page(
 
             st.success(f"{record_label} {cleaned_number} saved successfully.")
 
-    st.markdown("### Delivery order search")
+    number_label = f"{record_label} number"
+    st.markdown(f"### {record_label} search")
     filter_cols = st.columns((1.2, 1, 1, 1))
     with filter_cols[0]:
         query_text = st.text_input(
-            "Search by DO number, description or remarks", key="do_filter_text"
+            f"Search by {record_label.lower()} number, description or remarks",
+            key="do_filter_text",
         )
     with filter_cols[1]:
         customer_filter = st.selectbox(
@@ -10675,7 +10767,7 @@ def delivery_orders_page(
         st.dataframe(
             do_df.rename(
                 columns={
-                    "do_number": "DO number",
+                    "do_number": number_label,
                     "customer": "Customer",
                     "description": "Description",
                     "sales_person": "Sales person",
@@ -10709,7 +10801,7 @@ def delivery_orders_page(
             if clean_text(row.get("file_path"))
         }
     if downloads:
-        st.markdown("#### Download delivery order")
+        st.markdown(f"#### Download {record_label.lower()}")
         selected_download = st.selectbox(
             "Pick a delivery order", list(downloads.keys()), key="do_download_select"
         )
