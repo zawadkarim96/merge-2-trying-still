@@ -4458,6 +4458,10 @@ def dashboard(conn):
     allowed_customers = accessible_customer_ids(conn)
     scope_clause, scope_params = customer_scope_filter("c")
 
+    if st.session_state.pop("dashboard_remark_reset", False):
+        st.session_state["dashboard_remark_text"] = ""
+    st.session_state.setdefault("dashboard_remark_text", "")
+
     st.markdown("#### Team remarks")
     with st.form("dashboard_remark_form"):
         remark_text = st.text_area(
@@ -4478,7 +4482,7 @@ def dashboard(conn):
             )
             conn.commit()
             st.success("Remark saved for admin visibility.")
-            st.session_state["dashboard_remark_text"] = ""
+            st.session_state["dashboard_remark_reset"] = True
 
     remarks_df = df_query(
         conn,
@@ -10372,6 +10376,9 @@ def delivery_orders_page(
     if show_heading:
         st.subheader("🚚 Delivery orders")
 
+    record_label_input = clean_text(record_type_label)
+    record_label = record_label_input or "Delivery order"
+    record_label_lower = record_label.lower()
     st.session_state.setdefault("delivery_order_items_rows", _default_delivery_items())
     st.session_state.setdefault("delivery_order_number", "")
     st.session_state.setdefault("delivery_order_customer", None)
@@ -10411,7 +10418,7 @@ def delivery_orders_page(
         ),
         (record_type_key,),
     )
-    load_labels: dict[Optional[str], str] = {None: f"-- New {record_label.lower()} --"}
+    load_labels: dict[Optional[str], str] = {None: f"-- New {record_label_lower} --"}
     load_choices = [None]
     if not existing_dos.empty:
         for _, row in existing_dos.iterrows():
@@ -10422,13 +10429,12 @@ def delivery_orders_page(
             load_choices.append(do_num)
             load_labels[do_num] = f"{do_num} • {customer_name}"
 
-    record_label = clean_text(record_type_label) or "Delivery order"
     closed_statuses = {"paid", "rejected"}
     current_receipt_path: Optional[str] = None
 
-    st.markdown(f"### Create or update a {record_label.lower()}")
+    st.markdown(f"### Create or update a {record_label_lower}")
     selected_existing = st.selectbox(
-        f"Load existing {record_label.lower()}",
+        f"Load existing {record_label_lower}",
         load_choices,
         format_func=lambda val: load_labels.get(val, "-- New delivery order --"),
         key="do_form_loader",
@@ -10539,7 +10545,7 @@ def delivery_orders_page(
             type=["pdf"],
             help="Optional supporting document stored alongside the record.",
         )
-        submit = st.form_submit_button(f"Save {record_label.lower()}", type="primary")
+        submit = st.form_submit_button(f"Save {record_label_lower}", type="primary")
 
     if submit:
         cleaned_number = clean_text(do_number)
