@@ -911,6 +911,43 @@ def accessible_customer_ids(conn) -> Optional[set[int]]:
     return ids
 
 
+def filter_delivery_orders_for_view(
+    do_df: pd.DataFrame, allowed_customers: Optional[set[int]]
+) -> pd.DataFrame:
+    """Limit delivery order rows to records the current user can access.
+
+    Admins (``allowed_customers`` is ``None``) see all rows. Staff can always
+    see records linked to customers they own **or** records they personally
+    created, even when the customer link is missing.
+    """
+
+    if do_df is None or do_df.empty or allowed_customers is None:
+        return do_df
+
+    viewer_id = current_user_id()
+
+    def _allowed(row: pd.Series) -> bool:
+        cust_id = row.get("customer_id")
+        creator_id = row.get("created_by")
+
+        try:
+            if pd.notna(cust_id) and int(cust_id) in allowed_customers:
+                return True
+        except Exception:
+            pass
+
+        if viewer_id is not None:
+            try:
+                if pd.notna(creator_id) and int(creator_id) == int(viewer_id):
+                    return True
+            except Exception:
+                pass
+
+        return False
+
+    return do_df[do_df.apply(_allowed, axis=1)]
+
+
 def df_query(conn, q, params=()):
     return pd.read_sql_query(q, conn, params=params)
 
@@ -6955,18 +6992,18 @@ def _render_service_section(conn, *, show_heading: bool = True):
         st.subheader("🛠️ Service Records")
     _, customer_label_map = build_customer_groups(conn, only_complete=False)
     customer_options, customer_labels, _, label_by_id = fetch_customer_choices(conn)
+    viewer_id = current_user_id()
     do_df = df_query(
         conn,
         """
-        SELECT d.do_number, d.customer_id, COALESCE(c.name, '(unknown)') AS customer_name, d.description, d.remarks
+        SELECT d.do_number, d.customer_id, d.created_by, COALESCE(c.name, '(unknown)') AS customer_name, d.description, d.remarks
         FROM delivery_orders d
         LEFT JOIN customers c ON c.customer_id = d.customer_id
         ORDER BY datetime(d.created_at) DESC
         """,
     )
     allowed_customers = accessible_customer_ids(conn)
-    if allowed_customers is not None:
-        do_df = do_df[do_df["customer_id"].apply(lambda value: int(value) in allowed_customers if pd.notna(value) else False)]
+    do_df = filter_delivery_orders_for_view(do_df, allowed_customers)
     do_options = [None]
     do_labels = {None: "No delivery order (manual entry)"}
     do_customer_map = {}
@@ -7277,6 +7314,7 @@ def _render_service_section(conn, *, show_heading: bool = True):
                s.bill_amount,
                s.bill_document_path,
                s.updated_at,
+               s.created_by,
                COALESCE(c.name, cdo.name, '(unknown)') AS customer,
                COUNT(sd.document_id) AS doc_count
         FROM services s
@@ -7292,11 +7330,17 @@ def _render_service_section(conn, *, show_heading: bool = True):
         def _service_row_allowed(row):
             service_cust = row.get("customer_id")
             do_cust = row.get("do_customer_id")
+            creator_id = row.get("created_by")
             candidates = []
             if pd.notna(service_cust):
                 candidates.append(int(service_cust))
             if pd.notna(do_cust):
                 candidates.append(int(do_cust))
+            try:
+                if viewer_id is not None and pd.notna(creator_id) and int(creator_id) == int(viewer_id):
+                    return True
+            except Exception:
+                pass
             return any(cid in allowed_customers for cid in candidates)
 
         service_df = service_df[service_df.apply(_service_row_allowed, axis=1)]
@@ -7308,7 +7352,11 @@ def _render_service_section(conn, *, show_heading: bool = True):
             ),
             axis=1,
         )
-        service_df.drop(columns=["customer_id", "do_customer_id"], inplace=True, errors="ignore")
+        service_df.drop(
+            columns=["customer_id", "do_customer_id", "created_by"],
+            inplace=True,
+            errors="ignore",
+        )
         service_df["Last update"] = pd.to_datetime(service_df.get("updated_at"), errors="coerce").dt.strftime("%d-%m-%Y %H:%M")
         service_df.loc[service_df["Last update"].isna(), "Last update"] = None
         if "status" in service_df.columns:
@@ -9108,20 +9156,6 @@ def _render_quotation_section(conn, *, render_id: Optional[int] = None):
         grand_total_label = format_money(result["grand_total"]) or f"{result['grand_total']:,.2f}"
         st.markdown(f"**Grand total:** {grand_total_label}")
 
-        record_id = result.get("record_id")
-        if record_id:
-            editor_button = dedent(
-                f"""
-                <div style="margin: 0.5rem 0 1rem 0;">
-                  <a onclick="const port={QUOTATION_EDITOR_PORT}; const url=`${{location.protocol}}//${{location.hostname}}:${{port}}/quotation_editor/quotation_editor.html?quotation_id={record_id}`; window.open(url, '_blank'); return false;"
-                     style="display:inline-block; background:#0f766e; color:white; padding:10px 14px; border-radius:8px; font-weight:600; text-decoration:none;">
-                    Open letterhead editor
-                  </a>
-                </div>
-                """
-            )
-            st.markdown(editor_button, unsafe_allow_html=True)
-
 
 def _render_quotation_management(conn):
     st.markdown("### Quotation tracker")
@@ -9742,22 +9776,18 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
         st.subheader("🔧 Maintenance Records")
     _, customer_label_map = build_customer_groups(conn, only_complete=False)
     customer_options, customer_labels, _, label_by_id = fetch_customer_choices(conn)
+    viewer_id = current_user_id()
     do_df = df_query(
         conn,
         """
-        SELECT d.do_number, d.customer_id, COALESCE(c.name, '(unknown)') AS customer_name, d.description, d.remarks
+        SELECT d.do_number, d.customer_id, d.created_by, COALESCE(c.name, '(unknown)') AS customer_name, d.description, d.remarks
         FROM delivery_orders d
         LEFT JOIN customers c ON c.customer_id = d.customer_id
         ORDER BY datetime(d.created_at) DESC
         """,
     )
     allowed_customers = accessible_customer_ids(conn)
-    if allowed_customers is not None:
-        do_df = do_df[
-            do_df["customer_id"].apply(
-                lambda value: int(value) in allowed_customers if pd.notna(value) else False
-            )
-        ]
+    do_df = filter_delivery_orders_for_view(do_df, allowed_customers)
     do_options = [None]
     do_labels = {None: "No delivery order (manual entry)"}
     do_customer_map = {}
@@ -10004,6 +10034,7 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
                m.status,
                m.remarks,
                m.updated_at,
+               m.created_by,
                COALESCE(c.name, cdo.name, '(unknown)') AS customer,
                COUNT(md.document_id) AS doc_count
         FROM maintenance_records m
@@ -10019,11 +10050,17 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
         def _maintenance_row_allowed(row):
             maint_cust = row.get("customer_id")
             do_cust = row.get("do_customer_id")
+            creator_id = row.get("created_by")
             candidates = []
             if pd.notna(maint_cust):
                 candidates.append(int(maint_cust))
             if pd.notna(do_cust):
                 candidates.append(int(do_cust))
+            try:
+                if viewer_id is not None and pd.notna(creator_id) and int(creator_id) == int(viewer_id):
+                    return True
+            except Exception:
+                pass
             return any(cid in allowed_customers for cid in candidates)
 
         maintenance_df = maintenance_df[maintenance_df.apply(_maintenance_row_allowed, axis=1)]
@@ -10032,7 +10069,11 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
             maintenance_df,
             ["maintenance_date", "maintenance_start_date", "maintenance_end_date"],
         )
-        maintenance_df.drop(columns=["customer_id", "do_customer_id"], inplace=True, errors="ignore")
+        maintenance_df.drop(
+            columns=["customer_id", "do_customer_id", "created_by"],
+            inplace=True,
+            errors="ignore",
+        )
         maintenance_df["maintenance_period"] = maintenance_df.apply(
             lambda row: format_period_span(
                 row.get("maintenance_start_date"), row.get("maintenance_end_date")
@@ -10582,12 +10623,7 @@ def delivery_orders_page(
         """,
     )
     allowed_customers = accessible_customer_ids(conn)
-    if allowed_customers is not None:
-        do_df = do_df[
-            do_df["customer_id"].apply(
-                lambda value: int(value) in allowed_customers if pd.notna(value) else False
-            )
-        ]
+    do_df = filter_delivery_orders_for_view(do_df, allowed_customers)
     if not do_df.empty:
         do_df = fmt_dates(do_df, ["created_at", "updated_at"])
         if query_text:
