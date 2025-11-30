@@ -1939,7 +1939,7 @@ def format_amount_in_words(value: object) -> Optional[str]:
 
 def _coerce_float(value: object, default: float = 0.0) -> float:
     if isinstance(value, str):
-        value = value.strip()
+        value = value.strip().replace(",", "")
         if value == "":
             return default
     try:
@@ -4458,55 +4458,72 @@ def dashboard(conn):
     allowed_customers = accessible_customer_ids(conn)
     scope_clause, scope_params = customer_scope_filter("c")
 
-    if st.session_state.pop("dashboard_remark_reset", False):
-        st.session_state["dashboard_remark_text"] = ""
-    st.session_state.setdefault("dashboard_remark_text", "")
-
-    st.markdown("#### Team remarks")
-    with st.form("dashboard_remark_form"):
-        remark_text = st.text_area(
-            "Leave a note for the admin or yourself",
-            help="Remarks are stored on this dashboard so admins can review them.",
-            key="dashboard_remark_text",
-        )
-        submit_remark = st.form_submit_button("Save remark")
-
-    if submit_remark:
-        cleaned_note = clean_text(remark_text)
-        if not cleaned_note:
-            st.warning("Please enter a remark before saving.")
-        else:
-            conn.execute(
-                "INSERT INTO dashboard_remarks (user_id, note) VALUES (?, ?)",
-                (current_user_id(), cleaned_note),
-            )
-            conn.commit()
-            st.success("Remark saved for admin visibility.")
-            st.session_state["dashboard_remark_reset"] = True
-
-    remarks_df = df_query(
+    announcement = df_query(
         conn,
         dedent(
             """
-            SELECT dr.note, dr.created_at, COALESCE(u.username, 'User') AS author
+            SELECT dr.remark_id, dr.note, dr.created_at, COALESCE(u.username, 'User') AS author
             FROM dashboard_remarks dr
             LEFT JOIN users u ON u.user_id = dr.user_id
             ORDER BY datetime(dr.created_at) DESC
-            LIMIT 25
+            LIMIT 1
             """
         ),
     )
-    if remarks_df.empty:
-        st.caption("No remarks have been added yet.")
+    current_announcement = announcement.iloc[0] if not announcement.empty else None
+
+    st.markdown("#### Admin announcement for all staff")
+    if current_announcement is None:
+        st.caption("No announcement is currently set.")
     else:
-        remarks_df = fmt_dates(remarks_df, ["created_at"])
-        st.dataframe(
-            remarks_df.rename(
-                columns={"note": "Remark", "created_at": "Created", "author": "Author"}
-            ),
-            hide_index=True,
-            use_container_width=True,
+        st.info(
+            f"**{current_announcement['note']}**\n\n"
+            f"Posted by {current_announcement['author']} on "
+            f"{fmt_dates(announcement, ['created_at']).iloc[0]['created_at']}",
+            icon="📢",
         )
+
+    if is_admin:
+        if st.session_state.pop("dashboard_remark_reset", False):
+            st.session_state["dashboard_remark_text"] = ""
+        st.session_state.setdefault(
+            "dashboard_remark_text",
+            clean_text(current_announcement["note"]) if current_announcement is not None else "",
+        )
+
+        st.markdown("##### Update or clear the announcement")
+        with st.form("dashboard_remark_form"):
+            remark_text = st.text_area(
+                "Message visible to all staff",
+                help="Admins can share reminders or updates. The latest message stays pinned until replaced or deleted.",
+                key="dashboard_remark_text",
+            )
+            submit_remark = st.form_submit_button("Save announcement", type="primary")
+
+        if submit_remark:
+            cleaned_note = clean_text(remark_text)
+            if not cleaned_note:
+                st.warning("Please enter a message before saving.")
+            else:
+                conn.execute(
+                    "INSERT INTO dashboard_remarks (user_id, note) VALUES (?, ?)",
+                    (current_user_id(), cleaned_note),
+                )
+                conn.commit()
+                st.success("Announcement saved for all staff.")
+                st.session_state["dashboard_remark_reset"] = True
+                _safe_rerun()
+
+        if current_announcement is not None:
+            if st.button("Delete current announcement", type="secondary"):
+                conn.execute(
+                    "DELETE FROM dashboard_remarks WHERE remark_id = ?",
+                    (int(current_announcement["remark_id"]),),
+                )
+                conn.commit()
+                st.success("Announcement removed.")
+                st.session_state["dashboard_remark_reset"] = True
+                _safe_rerun()
 
     if "show_today_expired" not in st.session_state:
         st.session_state.show_today_expired = False
