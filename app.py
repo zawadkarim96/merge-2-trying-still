@@ -11134,8 +11134,25 @@ def delivery_orders_page(
     st.session_state.setdefault("delivery_order_sales_person", "")
     st.session_state.setdefault("delivery_order_remarks", "")
     st.session_state.setdefault("delivery_order_status", "pending")
+    autofill_customer_key = f"{record_type_key}_autofill_customer"
+    st.session_state.setdefault(autofill_customer_key, None)
 
     customer_options, customer_labels, _, _ = fetch_customer_choices(conn)
+    scope_clause, scope_params = customer_scope_filter("c")
+    where_sql = f"WHERE {scope_clause}" if scope_clause else ""
+    do_rows = df_query(
+        conn,
+        f"SELECT c.customer_id, c.delivery_order_code FROM customers c {where_sql}",
+        tuple(scope_params),
+    )
+    customer_do_map: dict[int, str] = {}
+    if not do_rows.empty:
+        for _, row in do_rows.iterrows():
+            customer_id = int_or_none(row.get("customer_id"))
+            code = clean_text(row.get("delivery_order_code"))
+            if customer_id is None or not code:
+                continue
+            customer_do_map[customer_id] = code
     existing_dos = df_query(
         conn,
         dedent(
@@ -11202,6 +11219,19 @@ def delivery_orders_page(
             current_receipt_path = clean_text(row.get("payment_receipt_path"))
             loaded_items = parse_delivery_items_payload(row.get("items_payload"))
             st.session_state["delivery_order_items_rows"] = loaded_items or _default_delivery_items()
+        st.session_state[autofill_customer_key] = None
+    else:
+        selected_customer_state = int_or_none(st.session_state.get("delivery_order_customer"))
+        last_autofill_customer = int_or_none(st.session_state.get(autofill_customer_key))
+        current_number = clean_text(st.session_state.get("delivery_order_number"))
+        if selected_customer_state and selected_customer_state != last_autofill_customer:
+            suggested_code = customer_do_map.get(selected_customer_state)
+            if suggested_code and not current_number:
+                st.session_state["delivery_order_number"] = suggested_code
+                current_number = suggested_code
+            st.session_state[autofill_customer_key] = selected_customer_state
+        elif selected_customer_state is None:
+            st.session_state[autofill_customer_key] = None
 
     with st.form("delivery_order_form"):
         do_number = st.text_input(
