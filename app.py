@@ -2424,14 +2424,14 @@ def normalize_quotation_items(
     totals = {
         "gross_total": 0.0,
         "discount_total": 0.0,
-        "taxable_total": 0.0,
         "grand_total": 0.0,
     }
 
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        description = clean_text(entry.get("description"))
+
+        description = clean_text(entry.get("description") or entry.get("Description"))
         if not description:
             continue
 
@@ -2439,39 +2439,53 @@ def normalize_quotation_items(
         model = clean_text(entry.get("model"))
         specs = clean_text(entry.get("specs")) or model
         note = clean_text(entry.get("note"))
+        hsn = clean_text(entry.get("hsn"))
+        unit = clean_text(entry.get("unit"))
+
         quantity = max(_coerce_float(entry.get("quantity"), 0.0), 0.0)
         rate = max(_coerce_float(entry.get("rate"), 0.0), 0.0)
         discount_pct = _clamp_percentage(_coerce_float(entry.get("discount"), 0.0))
 
         gross_amount = quantity * rate
         discount_amount = gross_amount * (discount_pct / 100.0)
-        taxable_value = max(gross_amount - discount_amount, 0.0)
         override_total = _coerce_float(entry.get("total_price"), None)
         line_total = (
             override_total
             if override_total is not None and override_total >= 0
-            else taxable_value
+            else max(gross_amount - discount_amount, 0.0)
         )
 
         description_label = dedupe_join([description, model], " – ") or description
 
         item = {
             "Sl No.": len(cleaned) + 1,
+            "Description": description,
             "Description of Generator": description_label,
             "Quantity": quantity,
             "Qty.": quantity,
+            "Unit": unit,
+            "HSN/SAC": hsn,
+            "KVA": kva,
+            "Specs": specs,
+            "Notes": note,
+            "Rate": rate,
             "Unit Price, Tk.": rate,
+            "Gross amount": gross_amount,
+            "Discount (%)": discount_pct,
+            "Discount amount": discount_amount,
+            "Line total": line_total,
             "Total Price, Tk.": line_total,
         }
-        if note:
-            item["Notes"] = note
-        if specs:
-            item["Specs"] = specs
+
+        # Remove optional empty fields to keep downstream tables tidy
+        for optional_key in ["Unit", "HSN/SAC", "KVA", "Specs", "Notes"]:
+            if not item.get(optional_key):
+                item.pop(optional_key, None)
+
         cleaned.append(item)
 
-        totals["gross_total"] += line_total
+        totals["gross_total"] += gross_amount
         totals["discount_total"] += discount_amount
-        totals["taxable_total"] += line_total
         totals["grand_total"] += line_total
 
     return cleaned, totals
@@ -6207,7 +6221,7 @@ def customers_page(conn):
                     key="new_customer_do_pdf",
                     help="Upload the delivery order so it is linked to this record.",
                 )
-            with st.expander("Quick related records", expanded=False):
+                st.markdown("---")
                 st.caption(
                     "Create delivery, work done, service or maintenance entries alongside this customer."
                 )
@@ -8591,15 +8605,6 @@ def _regenerate_quotation_pdf_from_workbook(file_path: Path) -> Optional[bytes]:
         ),
         "discount_total": _total_from_label("discount total")
         or sum(_coerce_float(item.get("Discount amount"), 0.0) for item in items),
-        "taxable_total": sum(
-            _coerce_float(
-                item.get("Total Price, Tk.")
-                or item.get("Taxable value")
-                or item.get("Line total"),
-                0.0,
-            )
-            for item in items
-        ),
         "grand_total": _total_from_label("grand total")
         or _total_from_label("manual total override")
         or sum(
@@ -11224,11 +11229,20 @@ def delivery_orders_page(
         selected_customer_state = int_or_none(st.session_state.get("delivery_order_customer"))
         last_autofill_customer = int_or_none(st.session_state.get(autofill_customer_key))
         current_number = clean_text(st.session_state.get("delivery_order_number"))
-        if selected_customer_state and selected_customer_state != last_autofill_customer:
+        suggested_code = None
+        if selected_customer_state:
             suggested_code = customer_do_map.get(selected_customer_state)
-            if suggested_code and not current_number:
-                st.session_state["delivery_order_number"] = suggested_code
-                current_number = suggested_code
+            if not suggested_code:
+                candidate = existing_dos[existing_dos["customer_id"] == selected_customer_state]
+                if not candidate.empty:
+                    suggested_code = clean_text(candidate.iloc[0].get("do_number"))
+        should_autofill = (
+            selected_customer_state
+            and (selected_customer_state != last_autofill_customer or not current_number)
+        )
+        if should_autofill and suggested_code:
+            st.session_state["delivery_order_number"] = suggested_code
+            current_number = suggested_code
             st.session_state[autofill_customer_key] = selected_customer_state
         elif selected_customer_state is None:
             st.session_state[autofill_customer_key] = None
@@ -11331,6 +11345,17 @@ def delivery_orders_page(
             st.error(f"{record_label} number is required.")
         else:
             cur = conn.cursor()
+            conflicting_type = df_query(
+                conn,
+                "SELECT COALESCE(record_type, 'delivery_order') AS record_type FROM delivery_orders WHERE do_number = ? AND COALESCE(record_type, 'delivery_order') <> ?",
+                (cleaned_number, record_type_key),
+            )
+            if not conflicting_type.empty:
+                conflict_label = clean_text(conflicting_type.iloc[0].get("record_type")) or "delivery order"
+                st.error(
+                    f"This number is already used for a {conflict_label.replace('_', ' ')}. Choose a different {record_label_lower} number."
+                )
+                return
             existing = df_query(
                 conn,
                 "SELECT file_path, items_payload, total_amount, created_by, status, payment_receipt_path FROM delivery_orders WHERE do_number = ? AND COALESCE(record_type, 'delivery_order') = ?",
