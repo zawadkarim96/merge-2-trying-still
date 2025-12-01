@@ -746,6 +746,10 @@ def ensure_schema_upgrades(conn):
     add_column("services", "bill_document_path", "TEXT")
     add_column("services", "created_by", "INTEGER")
     add_column("maintenance_records", "status", "TEXT DEFAULT 'In progress'")
+    add_column("services", "payment_status", "TEXT DEFAULT 'pending'")
+    add_column("services", "payment_receipt_path", "TEXT")
+    add_column("maintenance_records", "payment_status", "TEXT DEFAULT 'pending'")
+    add_column("maintenance_records", "payment_receipt_path", "TEXT")
     add_column("quotations", "payment_receipt_path", "TEXT")
     add_column("maintenance_records", "maintenance_start_date", "TEXT")
     add_column("maintenance_records", "maintenance_end_date", "TEXT")
@@ -6131,6 +6135,21 @@ def customers_page(conn):
                     key="new_customer_do_code",
                     help="Link the customer to an existing delivery order if available.",
                 )
+                work_done_number = st.text_input(
+                    "Work done number (optional)",
+                    key="new_customer_work_done_number",
+                    help="Reference code used when creating a work done record.",
+                )
+                service_reference = st.text_input(
+                    "Service reference (optional)",
+                    key="new_customer_service_reference",
+                    help="Code or tag to use when creating the linked service record.",
+                )
+                maintenance_reference = st.text_input(
+                    "Maintenance reference (optional)",
+                    key="new_customer_maintenance_reference",
+                    help="Code or tag for the maintenance record created with this customer.",
+                )
                 sales_person_input = st.text_input(
                     "Sales person",
                     value=st.session_state.get("new_customer_sales_person", salesperson_seed),
@@ -6188,37 +6207,61 @@ def customers_page(conn):
                     st.caption(
                         "Uses the delivery order code and product list exactly as on the Delivery orders page."
                     )
+                    do_status = st.selectbox(
+                        "Delivery order status",
+                        options=["pending", "paid"],
+                        key="new_customer_do_status",
+                        help="Mark as paid to require an accompanying receipt.",
+                    )
+                    st.file_uploader(
+                        "Delivery order receipt (required if paid)",
+                        type=["pdf", "png", "jpg", "jpeg", "webp"],
+                        key="new_customer_do_receipt",
+                        help="Upload proof of payment when marking the DO as paid.",
+                    )
 
                 if create_work_done:
                     st.subheader("Work done details")
                     st.caption(
                         "Matches the work done form so you can fill in the reference, remarks and PDF attachment."
                     )
-                    work_done_cols = st.columns((1, 1))
-                    work_done_number = work_done_cols[0].text_input(
-                        "Work done number",
-                        key="new_customer_work_done_number",
-                        help="Unique identifier for the work completion slip.",
+                    work_done_cols = st.columns((1, 2, 2))
+                    with work_done_cols[0]:
+                        st.caption(
+                            f"Work done number: {clean_text(work_done_number) or '— set above —'}"
+                        )
+                    work_done_status = work_done_cols[1].selectbox(
+                        "Work done status",
+                        options=["pending", "paid"],
+                        key="new_customer_work_done_status",
+                        help="Mark as paid to require an accompanying receipt.",
                     )
-                    work_done_pdf = work_done_cols[1].file_uploader(
+                    work_done_pdf = work_done_cols[2].file_uploader(
                         "Attach work done PDF",
                         type=["pdf"],
                         key="new_customer_work_done_pdf",
+                    )
+                    work_done_receipt = st.file_uploader(
+                        "Payment receipt (required for paid work done)",
+                        type=["pdf", "png", "jpg", "jpeg", "webp"],
+                        key="new_customer_work_done_receipt",
+                        help="Upload proof of payment if this work done is already paid.",
                     )
                     work_done_notes = st.text_area(
                         "Work done description / remarks",
                         key="new_customer_work_done_notes",
                     )
                 else:
-                    work_done_number = st.session_state.get("new_customer_work_done_number")
+                    work_done_status = st.session_state.get("new_customer_work_done_status", "pending")
                     work_done_pdf = st.session_state.get("new_customer_work_done_pdf")
+                    work_done_receipt = st.session_state.get("new_customer_work_done_receipt")
                     work_done_notes = st.session_state.get("new_customer_work_done_notes")
 
                 if create_service or create_maintenance:
                     st.subheader("After-sales records")
 
                 if create_service:
-                    service_cols = st.columns((1, 1))
+                    service_cols = st.columns((1, 1, 1))
                     service_date_input = service_cols[0].date_input(
                         "Service date",
                         value=purchase_date,
@@ -6229,12 +6272,26 @@ def customers_page(conn):
                         key="new_customer_service_description",
                         help="Mirror of the service page description field.",
                     )
+                    service_status = service_cols[2].selectbox(
+                        "Service payment status",
+                        options=["pending", "paid"],
+                        key="new_customer_service_payment_status",
+                        help="Track whether the service has been paid.",
+                    )
+                    service_receipt = st.file_uploader(
+                        "Service receipt (required if paid)",
+                        type=["pdf", "png", "jpg", "jpeg", "webp"],
+                        key="new_customer_service_receipt",
+                        help="Upload payment receipt when marking the service as paid.",
+                    )
                 else:
                     service_date_input = st.session_state.get("new_customer_service_date")
                     service_description = st.session_state.get("new_customer_service_description")
+                    service_status = st.session_state.get("new_customer_service_payment_status", "pending")
+                    service_receipt = st.session_state.get("new_customer_service_receipt")
 
                 if create_maintenance:
-                    maintenance_cols = st.columns((1, 1))
+                    maintenance_cols = st.columns((1, 1, 1))
                     maintenance_date_input = maintenance_cols[0].date_input(
                         "Maintenance date",
                         value=purchase_date,
@@ -6245,9 +6302,25 @@ def customers_page(conn):
                         key="new_customer_maintenance_description",
                         help="Same fields as the maintenance page for easy entry.",
                     )
+                    maintenance_status = maintenance_cols[2].selectbox(
+                        "Maintenance payment status",
+                        options=["pending", "paid"],
+                        key="new_customer_maintenance_payment_status",
+                        help="Track whether maintenance has been paid.",
+                    )
+                    maintenance_receipt = st.file_uploader(
+                        "Maintenance receipt (required if paid)",
+                        type=["pdf", "png", "jpg", "jpeg", "webp"],
+                        key="new_customer_maintenance_receipt",
+                        help="Upload payment receipt when marking maintenance as paid.",
+                    )
                 else:
                     maintenance_date_input = st.session_state.get("new_customer_maintenance_date")
                     maintenance_description = st.session_state.get("new_customer_maintenance_description")
+                    maintenance_status = st.session_state.get(
+                        "new_customer_maintenance_payment_status", "pending"
+                    )
+                    maintenance_receipt = st.session_state.get("new_customer_maintenance_receipt")
             action_cols = st.columns((1, 1))
             submitted = action_cols[0].form_submit_button(
                 "Save new customer", type="primary"
@@ -6300,6 +6373,11 @@ def customers_page(conn):
                 product_items = _products_to_delivery_items(cleaned_products)
                 delivery_items_payload = None
                 delivery_total = 0.0
+                do_status_value = (
+                    clean_text(st.session_state.get("new_customer_do_status")) or "pending"
+                )
+                if do_status_value not in {"pending", "paid"}:
+                    do_status_value = "pending"
                 if product_items:
                     normalized_items, delivery_total = normalize_delivery_items(product_items)
                     if normalized_items:
@@ -6371,21 +6449,38 @@ def customers_page(conn):
                         stored_path = store_uploaded_pdf(
                             do_pdf, DELIVERY_ORDER_DIR, filename=f"{safe_name}.pdf"
                         )
+                    do_receipt_path = None
                     cur = conn.cursor()
                     existing = cur.execute(
                         """
-                        SELECT customer_id, file_path, items_payload, total_amount
+                        SELECT customer_id, file_path, items_payload, total_amount, payment_receipt_path
                         FROM delivery_orders
                         WHERE do_number = ? AND COALESCE(record_type, 'delivery_order') = 'delivery_order'
                         """,
                         (do_serial,),
                     ).fetchone()
+                    existing_receipt = clean_text(existing[4]) if existing else None
+                    if do_status_value == "paid":
+                        do_receipt = st.session_state.get("new_customer_do_receipt")
+                        if do_receipt:
+                            do_receipt_path = store_payment_receipt(
+                                do_receipt,
+                                identifier=f"{_sanitize_path_component(do_serial) or 'do'}_receipt",
+                                target_dir=DELIVERY_RECEIPT_DIR,
+                            )
+                        if not do_receipt_path and existing_receipt:
+                            do_receipt_path = existing_receipt
+                        if not do_receipt_path:
+                            st.error("Upload a payment receipt before marking the DO as paid.")
+                            return
                     product_summary = (
                         cleaned_products[0].get("name") if cleaned_products else product_label
                     )
                     sales_clean = clean_text(sales_person_input)
                     if existing:
-                        existing_customer, existing_path, existing_items, existing_total = existing
+                        existing_customer, existing_path, existing_items, existing_total, existing_receipt = existing
+                        if do_status_value == "paid" and not do_receipt_path:
+                            do_receipt_path = clean_text(existing_receipt)
                         if existing_customer and int(existing_customer) != int(cid):
                             st.warning(
                                 "Delivery order code already linked to another customer. Upload skipped."
@@ -6416,6 +6511,8 @@ def customers_page(conn):
                                        file_path=?,
                                        items_payload=COALESCE(?, items_payload),
                                        total_amount=COALESCE(?, total_amount),
+                                       status=?,
+                                       payment_receipt_path=COALESCE(?, payment_receipt_path),
                                        record_type='delivery_order'
                                  WHERE do_number=? AND COALESCE(record_type, 'delivery_order') = 'delivery_order'
                                 """,
@@ -6427,6 +6524,8 @@ def customers_page(conn):
                                     final_path,
                                     delivery_items_payload,
                                     delivery_total if delivery_items_payload else existing_total,
+                                    do_status_value,
+                                    do_receipt_path,
                                     do_serial,
                                 ),
                             )
@@ -6445,8 +6544,9 @@ def customers_page(conn):
                                 items_payload,
                                 total_amount,
                                 status,
+                                payment_receipt_path,
                                 record_type
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'delivery_order')
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'delivery_order')
                             """,
                             (
                                 do_serial,
@@ -6458,6 +6558,8 @@ def customers_page(conn):
                                 stored_path,
                                 delivery_items_payload,
                                 delivery_total if delivery_items_payload else None,
+                                do_status_value,
+                                do_receipt_path,
                             ),
                         )
                         conn.commit()
@@ -6488,11 +6590,33 @@ def customers_page(conn):
                                     filename=f"work_done_{safe_name}.pdf",
                                 )
                             work_done_saved = False
+                            work_done_status_value = clean_text(work_done_status) or "pending"
+                            if work_done_status_value not in {"pending", "paid"}:
+                                work_done_status_value = "pending"
+                            work_done_receipt_path = None
+                            if work_done_status_value == "paid":
+                                work_done_receipt_path = store_payment_receipt(
+                                    work_done_receipt,
+                                    identifier=f"{_sanitize_path_component(work_done_serial) or 'work_done'}_receipt",
+                                    target_dir=DELIVERY_RECEIPT_DIR,
+                                )
                             existing_work_done = df_query(
                                 conn,
-                                "SELECT record_type, file_path FROM delivery_orders WHERE do_number = ?",
+                                "SELECT record_type, file_path, payment_receipt_path FROM delivery_orders WHERE do_number = ?",
                                 (work_done_serial,),
                             )
+                            existing_work_done_receipt = None
+                            if not existing_work_done.empty:
+                                existing_work_done_receipt = clean_text(
+                                    existing_work_done.iloc[0].get("payment_receipt_path")
+                                )
+                            if work_done_status_value == "paid" and not (
+                                work_done_receipt_path or existing_work_done_receipt
+                            ):
+                                st.error(
+                                    "Upload a payment receipt before marking the work done as paid."
+                                )
+                                return
                             work_done_description = clean_text(work_done_notes) or product_label
                             if existing_work_done.empty:
                                 conn.execute(
@@ -6507,8 +6631,9 @@ def customers_page(conn):
                                         items_payload,
                                         total_amount,
                                         status,
+                                        payment_receipt_path,
                                         record_type
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'work_done')
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'work_done')
                                     """,
                                     (
                                         work_done_serial,
@@ -6519,6 +6644,8 @@ def customers_page(conn):
                                         work_done_path,
                                         work_done_payload,
                                         work_done_total,
+                                        work_done_status_value,
+                                        work_done_receipt_path,
                                     ),
                                 )
                                 work_done_saved = True
@@ -6526,6 +6653,11 @@ def customers_page(conn):
                                 existing_type = clean_text(
                                     existing_work_done.iloc[0].get("record_type")
                                 ) or "delivery_order"
+                                existing_work_done_receipt = clean_text(
+                                    existing_work_done.iloc[0].get("payment_receipt_path")
+                                )
+                                if work_done_status_value == "paid" and not work_done_receipt_path:
+                                    work_done_receipt_path = existing_work_done_receipt
                                 if existing_type != "work_done":
                                     st.error(
                                         "A delivery order already uses this number. Choose a different work done number."
@@ -6559,6 +6691,8 @@ def customers_page(conn):
                                                file_path=?,
                                                items_payload=?,
                                                total_amount=?,
+                                               status=?,
+                                               payment_receipt_path=COALESCE(?, payment_receipt_path),
                                                record_type='work_done'
                                          WHERE do_number=? AND COALESCE(record_type, 'delivery_order') = 'work_done'
                                         """,
@@ -6570,6 +6704,8 @@ def customers_page(conn):
                                             final_path,
                                             work_done_payload,
                                             work_done_total,
+                                            work_done_status_value,
+                                            work_done_receipt_path,
                                             work_done_serial,
                                         ),
                                     )
@@ -6597,6 +6733,22 @@ def customers_page(conn):
                     service_date_str = to_iso_date(service_date_input) or purchase_str
                     if not service_date_str:
                         service_date_str = datetime.utcnow().strftime("%Y-%m-%d")
+                    service_reference = clean_text(service_reference) or do_serial
+                    service_status_value = clean_text(service_status) or "pending"
+                    if service_status_value not in {"pending", "paid"}:
+                        service_status_value = "pending"
+                    service_receipt_path = None
+                    if service_status_value == "paid":
+                        service_receipt_path = store_payment_receipt(
+                            service_receipt,
+                            identifier=f"{_sanitize_path_component(service_reference) or 'service'}_receipt",
+                            target_dir=SERVICE_BILL_DIR,
+                        )
+                        if not service_receipt_path:
+                            st.error(
+                                "Upload a payment receipt before marking the service as paid."
+                            )
+                            return
                     conn.execute(
                         """
                         INSERT INTO services (
@@ -6609,12 +6761,14 @@ def customers_page(conn):
                             status,
                             remarks,
                             service_product_info,
+                            payment_status,
+                            payment_receipt_path,
                             updated_at,
                             created_by
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
                         """,
                         (
-                            do_serial,
+                            service_reference,
                             cid,
                             service_date_str,
                             service_date_str,
@@ -6623,6 +6777,8 @@ def customers_page(conn):
                             DEFAULT_SERVICE_STATUS,
                             remarks_val,
                             product_label,
+                            service_status_value,
+                            service_receipt_path,
                             created_by,
                         ),
                     )
@@ -6639,6 +6795,22 @@ def customers_page(conn):
                     maintenance_date_str = to_iso_date(maintenance_date_input) or purchase_str
                     if not maintenance_date_str:
                         maintenance_date_str = datetime.utcnow().strftime("%Y-%m-%d")
+                    maintenance_reference = clean_text(maintenance_reference) or do_serial
+                    maintenance_status_value = clean_text(maintenance_status) or "pending"
+                    if maintenance_status_value not in {"pending", "paid"}:
+                        maintenance_status_value = "pending"
+                    maintenance_receipt_path = None
+                    if maintenance_status_value == "paid":
+                        maintenance_receipt_path = store_payment_receipt(
+                            maintenance_receipt,
+                            identifier=f"{_sanitize_path_component(maintenance_reference) or 'maintenance'}_receipt",
+                            target_dir=MAINTENANCE_DOCS_DIR,
+                        )
+                        if not maintenance_receipt_path:
+                            st.error(
+                                "Upload a payment receipt before marking the maintenance as paid."
+                            )
+                            return
                     conn.execute(
                         """
                         INSERT INTO maintenance_records (
@@ -6651,11 +6823,13 @@ def customers_page(conn):
                             status,
                             remarks,
                             maintenance_product_info,
+                            payment_status,
+                            payment_receipt_path,
                             updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                         """,
                         (
-                            do_serial,
+                            maintenance_reference,
                             cid,
                             maintenance_date_str,
                             maintenance_date_str,
@@ -6664,6 +6838,8 @@ def customers_page(conn):
                             DEFAULT_SERVICE_STATUS,
                             remarks_val,
                             product_label,
+                            maintenance_status_value,
+                            maintenance_receipt_path,
                         ),
                     )
                     log_activity(
