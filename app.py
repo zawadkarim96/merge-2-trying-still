@@ -6153,59 +6153,101 @@ def customers_page(conn):
                 st.caption(
                     "Create delivery, work done, service or maintenance entries alongside this customer."
                 )
-                create_delivery_order = st.checkbox(
-                    "Create delivery order using DO code and product list",
-                    value=bool(st.session_state.get("new_customer_create_delivery_order") or do_code),
-                    key="new_customer_create_delivery_order",
-                    help="Saves a delivery order with the provided DO code and product table.",
+
+                default_related: list[str] = []
+                if st.session_state.get("new_customer_create_delivery_order") or do_code:
+                    default_related.append("Delivery order")
+                if st.session_state.get("new_customer_create_work_done"):
+                    default_related.append("Work done")
+                if st.session_state.get("new_customer_create_service"):
+                    default_related.append("Service")
+                if st.session_state.get("new_customer_create_maintenance"):
+                    default_related.append("Maintenance")
+
+                selected_related = st.multiselect(
+                    "Related records to create",
+                    options=["Delivery order", "Work done", "Service", "Maintenance"],
+                    default=default_related,
+                    help=(
+                        "Select the record types you want to save with this customer. Only the "
+                        "relevant inputs will be shown so the section matches the dedicated pages."
+                    ),
                 )
-                create_work_done = st.checkbox(
-                    "Create work done record",
-                    key="new_customer_create_work_done",
-                    help="Adds a work done entry with the same product details.",
-                )
-                work_done_number = st.text_input(
-                    "Work done number",
-                    key="new_customer_work_done_number",
-                    help="Unique identifier for the work completion slip.",
-                )
-                work_done_notes = st.text_area(
-                    "Work done description / remarks",
-                    key="new_customer_work_done_notes",
-                )
-                work_done_pdf = st.file_uploader(
-                    "Attach work done PDF",
-                    type=["pdf"],
-                    key="new_customer_work_done_pdf",
-                )
-                create_service = st.checkbox(
-                    "Add service record",
-                    key="new_customer_create_service",
-                    help="Logs a service record tied to this customer and optional DO.",
-                )
-                service_date_input = st.date_input(
-                    "Service date",
-                    value=purchase_date,
-                    key="new_customer_service_date",
-                )
-                service_description = st.text_area(
-                    "Service description",
-                    key="new_customer_service_description",
-                )
-                create_maintenance = st.checkbox(
-                    "Add maintenance record",
-                    key="new_customer_create_maintenance",
-                    help="Logs a maintenance record tied to this customer and optional DO.",
-                )
-                maintenance_date_input = st.date_input(
-                    "Maintenance date",
-                    value=purchase_date,
-                    key="new_customer_maintenance_date",
-                )
-                maintenance_description = st.text_area(
-                    "Maintenance description",
-                    key="new_customer_maintenance_description",
-                )
+
+                create_delivery_order = "Delivery order" in selected_related
+                create_work_done = "Work done" in selected_related
+                create_service = "Service" in selected_related
+                create_maintenance = "Maintenance" in selected_related
+                st.session_state["new_customer_create_delivery_order"] = create_delivery_order
+                st.session_state["new_customer_create_work_done"] = create_work_done
+                st.session_state["new_customer_create_service"] = create_service
+                st.session_state["new_customer_create_maintenance"] = create_maintenance
+
+                if create_delivery_order:
+                    st.subheader("Delivery order details")
+                    st.caption(
+                        "Uses the delivery order code and product list exactly as on the Delivery orders page."
+                    )
+
+                if create_work_done:
+                    st.subheader("Work done details")
+                    st.caption(
+                        "Matches the work done form so you can fill in the reference, remarks and PDF attachment."
+                    )
+                    work_done_cols = st.columns((1, 1))
+                    work_done_number = work_done_cols[0].text_input(
+                        "Work done number",
+                        key="new_customer_work_done_number",
+                        help="Unique identifier for the work completion slip.",
+                    )
+                    work_done_pdf = work_done_cols[1].file_uploader(
+                        "Attach work done PDF",
+                        type=["pdf"],
+                        key="new_customer_work_done_pdf",
+                    )
+                    work_done_notes = st.text_area(
+                        "Work done description / remarks",
+                        key="new_customer_work_done_notes",
+                    )
+                else:
+                    work_done_number = st.session_state.get("new_customer_work_done_number")
+                    work_done_pdf = st.session_state.get("new_customer_work_done_pdf")
+                    work_done_notes = st.session_state.get("new_customer_work_done_notes")
+
+                if create_service or create_maintenance:
+                    st.subheader("After-sales records")
+
+                if create_service:
+                    service_cols = st.columns((1, 1))
+                    service_date_input = service_cols[0].date_input(
+                        "Service date",
+                        value=purchase_date,
+                        key="new_customer_service_date",
+                    )
+                    service_description = service_cols[1].text_area(
+                        "Service description",
+                        key="new_customer_service_description",
+                        help="Mirror of the service page description field.",
+                    )
+                else:
+                    service_date_input = st.session_state.get("new_customer_service_date")
+                    service_description = st.session_state.get("new_customer_service_description")
+
+                if create_maintenance:
+                    maintenance_cols = st.columns((1, 1))
+                    maintenance_date_input = maintenance_cols[0].date_input(
+                        "Maintenance date",
+                        value=purchase_date,
+                        key="new_customer_maintenance_date",
+                    )
+                    maintenance_description = maintenance_cols[1].text_area(
+                        "Maintenance description",
+                        key="new_customer_maintenance_description",
+                        help="Same fields as the maintenance page for easy entry.",
+                    )
+                else:
+                    maintenance_date_input = st.session_state.get("new_customer_maintenance_date")
+                    maintenance_description = st.session_state.get("new_customer_maintenance_description")
             action_cols = st.columns((1, 1))
             submitted = action_cols[0].form_submit_button(
                 "Save new customer", type="primary"
@@ -6533,12 +6575,18 @@ def customers_page(conn):
                                     )
                                     work_done_saved = True
                             if work_done_saved:
+                                formatted_work_done = format_money(work_done_total)
+                                if not formatted_work_done and work_done_total is not None:
+                                    try:
+                                        formatted_work_done = f"{float(work_done_total):,.2f}"
+                                    except (TypeError, ValueError):
+                                        formatted_work_done = ""
                                 log_activity(
                                     conn,
                                     event_type="work_done_created",
                                     description=(
                                         f"Work done {work_done_serial} saved for {name_val or 'customer'}"
-                                        f" ({format_money(work_done_total) or work_done_total:,.2f})"
+                                        f" ({formatted_work_done})"
                                     ),
                                     entity_type="work_done",
                                     entity_id=None,
