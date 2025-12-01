@@ -2680,6 +2680,17 @@ def _reset_new_customer_form_state() -> None:
         "new_customer_amount_spent",
         "new_customer_pdf",
         "new_customer_do_pdf",
+        "new_customer_create_delivery_order",
+        "new_customer_create_work_done",
+        "new_customer_work_done_number",
+        "new_customer_work_done_notes",
+        "new_customer_work_done_pdf",
+        "new_customer_create_service",
+        "new_customer_service_date",
+        "new_customer_service_description",
+        "new_customer_create_maintenance",
+        "new_customer_maintenance_date",
+        "new_customer_maintenance_description",
         "new_customer_products_table",
     ]:
         st.session_state.pop(key, None)
@@ -2705,6 +2716,27 @@ def _default_delivery_items() -> list[dict[str, object]]:
             "discount": 0.0,
         }
     ]
+
+
+def _products_to_delivery_items(products: Iterable[dict[str, object]]) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    for entry in products or []:
+        if not isinstance(entry, dict):
+            continue
+        name = clean_text(entry.get("name"))
+        model = clean_text(entry.get("model"))
+        description = " ".join(part for part in [name, model] if part).strip()
+        if not description:
+            continue
+        items.append(
+            {
+                "description": description,
+                "quantity": _coerce_float(entry.get("quantity"), 1.0),
+                "unit_price": _coerce_float(entry.get("unit_price"), 0.0),
+                "discount": 0.0,
+            }
+        )
+    return items
 
 
 def normalize_delivery_items(rows: Iterable[dict[str, object]]) -> tuple[list[dict[str, object]], float]:
@@ -6117,6 +6149,63 @@ def customers_page(conn):
                     key="new_customer_do_pdf",
                     help="Upload the delivery order so it is linked to this record.",
                 )
+            with st.expander("Quick related records", expanded=False):
+                st.caption(
+                    "Create delivery, work done, service or maintenance entries alongside this customer."
+                )
+                create_delivery_order = st.checkbox(
+                    "Create delivery order using DO code and product list",
+                    value=bool(st.session_state.get("new_customer_create_delivery_order") or do_code),
+                    key="new_customer_create_delivery_order",
+                    help="Saves a delivery order with the provided DO code and product table.",
+                )
+                create_work_done = st.checkbox(
+                    "Create work done record",
+                    key="new_customer_create_work_done",
+                    help="Adds a work done entry with the same product details.",
+                )
+                work_done_number = st.text_input(
+                    "Work done number",
+                    key="new_customer_work_done_number",
+                    help="Unique identifier for the work completion slip.",
+                )
+                work_done_notes = st.text_area(
+                    "Work done description / remarks",
+                    key="new_customer_work_done_notes",
+                )
+                work_done_pdf = st.file_uploader(
+                    "Attach work done PDF",
+                    type=["pdf"],
+                    key="new_customer_work_done_pdf",
+                )
+                create_service = st.checkbox(
+                    "Add service record",
+                    key="new_customer_create_service",
+                    help="Logs a service record tied to this customer and optional DO.",
+                )
+                service_date_input = st.date_input(
+                    "Service date",
+                    value=purchase_date,
+                    key="new_customer_service_date",
+                )
+                service_description = st.text_area(
+                    "Service description",
+                    key="new_customer_service_description",
+                )
+                create_maintenance = st.checkbox(
+                    "Add maintenance record",
+                    key="new_customer_create_maintenance",
+                    help="Logs a maintenance record tied to this customer and optional DO.",
+                )
+                maintenance_date_input = st.date_input(
+                    "Maintenance date",
+                    value=purchase_date,
+                    key="new_customer_maintenance_date",
+                )
+                maintenance_description = st.text_area(
+                    "Maintenance description",
+                    key="new_customer_maintenance_description",
+                )
             action_cols = st.columns((1, 1))
             submitted = action_cols[0].form_submit_button(
                 "Save new customer", type="primary"
@@ -6139,6 +6228,19 @@ def customers_page(conn):
                     errors.append(
                         "Enter a delivery order code before attaching a delivery order PDF."
                     )
+                if create_delivery_order and not do_serial:
+                    errors.append(
+                        "Enter a delivery order code to create a linked delivery order record."
+                    )
+                work_done_serial = clean_text(work_done_number)
+                if create_work_done and not work_done_serial:
+                    errors.append("Work done number is required when creating a record.")
+                if create_service and not clean_text(service_description):
+                    errors.append("Add a short service description to create the service record.")
+                if create_maintenance and not clean_text(maintenance_description):
+                    errors.append(
+                        "Add a short maintenance description to create the maintenance record."
+                    )
                 if errors:
                     for msg in errors:
                         st.error(msg)
@@ -6153,6 +6255,17 @@ def customers_page(conn):
                 sales_person_value = clean_text(sales_person_input) or salesperson_seed
                 cleaned_products, product_labels = normalize_product_entries(product_entries)
                 product_label = "\n".join(product_labels) if product_labels else None
+                product_items = _products_to_delivery_items(cleaned_products)
+                delivery_items_payload = None
+                delivery_total = 0.0
+                if product_items:
+                    normalized_items, delivery_total = normalize_delivery_items(product_items)
+                    if normalized_items:
+                        delivery_items_payload = json.dumps(
+                            normalized_items, ensure_ascii=False
+                        )
+                    else:
+                        delivery_total = 0.0
                 purchase_str = purchase_date.strftime("%Y-%m-%d") if purchase_date else None
                 amount_value = parse_amount(amount_spent_input)
                 if amount_value == 0.0 and (amount_spent_input is None or amount_spent_input == 0.0):
@@ -6209,7 +6322,7 @@ def customers_page(conn):
                             (cid, pid, prod.get("serial"), issue, expiry, remarks_val),
                         )
                     conn.commit()
-                if do_serial:
+                if do_serial and (create_delivery_order or do_pdf is not None):
                     stored_path = None
                     if do_pdf is not None:
                         safe_name = _sanitize_path_component(do_serial)
@@ -6218,7 +6331,11 @@ def customers_page(conn):
                         )
                     cur = conn.cursor()
                     existing = cur.execute(
-                        "SELECT customer_id, file_path FROM delivery_orders WHERE do_number = ?",
+                        """
+                        SELECT customer_id, file_path, items_payload, total_amount
+                        FROM delivery_orders
+                        WHERE do_number = ? AND COALESCE(record_type, 'delivery_order') = 'delivery_order'
+                        """,
                         (do_serial,),
                     ).fetchone()
                     product_summary = (
@@ -6226,8 +6343,7 @@ def customers_page(conn):
                     )
                     sales_clean = clean_text(sales_person_input)
                     if existing:
-                        existing_customer = existing[0]
-                        existing_path = existing[1]
+                        existing_customer, existing_path, existing_items, existing_total = existing
                         if existing_customer and int(existing_customer) != int(cid):
                             st.warning(
                                 "Delivery order code already linked to another customer. Upload skipped."
@@ -6249,19 +6365,47 @@ def customers_page(conn):
                                     except Exception:
                                         pass
                             conn.execute(
-                                "UPDATE delivery_orders SET customer_id=?, description=?, sales_person=?, file_path=? WHERE do_number=?",
+                                """
+                                UPDATE delivery_orders
+                                   SET customer_id=?,
+                                       description=?,
+                                       sales_person=?,
+                                       remarks=?,
+                                       file_path=?,
+                                       items_payload=COALESCE(?, items_payload),
+                                       total_amount=COALESCE(?, total_amount),
+                                       record_type='delivery_order'
+                                 WHERE do_number=? AND COALESCE(record_type, 'delivery_order') = 'delivery_order'
+                                """,
                                 (
                                     cid,
                                     product_summary,
                                     sales_clean,
+                                    remarks_val,
                                     final_path,
+                                    delivery_items_payload,
+                                    delivery_total if delivery_items_payload else existing_total,
                                     do_serial,
                                 ),
                             )
                             conn.commit()
                     else:
                         conn.execute(
-                            "INSERT INTO delivery_orders (do_number, customer_id, order_id, description, sales_person, remarks, file_path) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            """
+                            INSERT INTO delivery_orders (
+                                do_number,
+                                customer_id,
+                                order_id,
+                                description,
+                                sales_person,
+                                remarks,
+                                file_path,
+                                items_payload,
+                                total_amount,
+                                status,
+                                record_type
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'delivery_order')
+                            """,
                             (
                                 do_serial,
                                 cid,
@@ -6270,9 +6414,218 @@ def customers_page(conn):
                                 sales_clean,
                                 remarks_val,
                                 stored_path,
+                                delivery_items_payload,
+                                delivery_total if delivery_items_payload else None,
                             ),
                         )
                         conn.commit()
+
+                if create_work_done and work_done_serial:
+                    if not product_items:
+                        st.warning(
+                            "Add at least one product row before creating a work done record."
+                        )
+                    else:
+                        work_done_items, work_done_total = normalize_delivery_items(
+                            product_items
+                        )
+                        if not work_done_items:
+                            st.warning(
+                                "Work done could not be saved because no valid products were provided."
+                            )
+                        else:
+                            work_done_payload = json.dumps(
+                                work_done_items, ensure_ascii=False
+                            )
+                            work_done_path = None
+                            if work_done_pdf is not None:
+                                safe_name = _sanitize_path_component(work_done_serial)
+                                work_done_path = store_uploaded_pdf(
+                                    work_done_pdf,
+                                    DELIVERY_ORDER_DIR,
+                                    filename=f"work_done_{safe_name}.pdf",
+                                )
+                            work_done_saved = False
+                            existing_work_done = df_query(
+                                conn,
+                                "SELECT record_type, file_path FROM delivery_orders WHERE do_number = ?",
+                                (work_done_serial,),
+                            )
+                            work_done_description = clean_text(work_done_notes) or product_label
+                            if existing_work_done.empty:
+                                conn.execute(
+                                    """
+                                    INSERT INTO delivery_orders (
+                                        do_number,
+                                        customer_id,
+                                        description,
+                                        sales_person,
+                                        remarks,
+                                        file_path,
+                                        items_payload,
+                                        total_amount,
+                                        status,
+                                        record_type
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'work_done')
+                                    """,
+                                    (
+                                        work_done_serial,
+                                        cid,
+                                        work_done_description,
+                                        sales_person_value,
+                                        clean_text(work_done_notes),
+                                        work_done_path,
+                                        work_done_payload,
+                                        work_done_total,
+                                    ),
+                                )
+                                work_done_saved = True
+                            else:
+                                existing_type = clean_text(
+                                    existing_work_done.iloc[0].get("record_type")
+                                ) or "delivery_order"
+                                if existing_type != "work_done":
+                                    st.error(
+                                        "A delivery order already uses this number. Choose a different work done number."
+                                    )
+                                    if work_done_path:
+                                        new_path = resolve_upload_path(work_done_path)
+                                        if new_path and new_path.exists():
+                                            try:
+                                                new_path.unlink()
+                                            except Exception:
+                                                pass
+                                else:
+                                    existing_path = clean_text(
+                                        existing_work_done.iloc[0].get("file_path")
+                                    )
+                                    final_path = work_done_path or existing_path
+                                    if work_done_path and existing_path and work_done_path != existing_path:
+                                        old_path = resolve_upload_path(existing_path)
+                                        if old_path and old_path.exists():
+                                            try:
+                                                old_path.unlink()
+                                            except Exception:
+                                                pass
+                                    conn.execute(
+                                        """
+                                        UPDATE delivery_orders
+                                           SET customer_id=?,
+                                               description=?,
+                                               sales_person=?,
+                                               remarks=?,
+                                               file_path=?,
+                                               items_payload=?,
+                                               total_amount=?,
+                                               record_type='work_done'
+                                         WHERE do_number=? AND COALESCE(record_type, 'delivery_order') = 'work_done'
+                                        """,
+                                        (
+                                            cid,
+                                            work_done_description,
+                                            sales_person_value,
+                                            clean_text(work_done_notes),
+                                            final_path,
+                                            work_done_payload,
+                                            work_done_total,
+                                            work_done_serial,
+                                        ),
+                                    )
+                                    work_done_saved = True
+                            if work_done_saved:
+                                log_activity(
+                                    conn,
+                                    event_type="work_done_created",
+                                    description=(
+                                        f"Work done {work_done_serial} saved for {name_val or 'customer'}"
+                                        f" ({format_money(work_done_total) or work_done_total:,.2f})"
+                                    ),
+                                    entity_type="work_done",
+                                    entity_id=None,
+                                )
+                                conn.commit()
+
+                if create_service:
+                    service_date_str = to_iso_date(service_date_input) or purchase_str
+                    if not service_date_str:
+                        service_date_str = datetime.utcnow().strftime("%Y-%m-%d")
+                    conn.execute(
+                        """
+                        INSERT INTO services (
+                            do_number,
+                            customer_id,
+                            service_date,
+                            service_start_date,
+                            service_end_date,
+                            description,
+                            status,
+                            remarks,
+                            service_product_info,
+                            updated_at,
+                            created_by
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+                        """,
+                        (
+                            do_serial,
+                            cid,
+                            service_date_str,
+                            service_date_str,
+                            service_date_str,
+                            clean_text(service_description),
+                            DEFAULT_SERVICE_STATUS,
+                            remarks_val,
+                            product_label,
+                            created_by,
+                        ),
+                    )
+                    log_activity(
+                        conn,
+                        event_type="service_created",
+                        description=f"Service logged for {name_val or 'customer'}",
+                        entity_type="service",
+                        entity_id=None,
+                    )
+                    conn.commit()
+
+                if create_maintenance:
+                    maintenance_date_str = to_iso_date(maintenance_date_input) or purchase_str
+                    if not maintenance_date_str:
+                        maintenance_date_str = datetime.utcnow().strftime("%Y-%m-%d")
+                    conn.execute(
+                        """
+                        INSERT INTO maintenance_records (
+                            do_number,
+                            customer_id,
+                            maintenance_date,
+                            maintenance_start_date,
+                            maintenance_end_date,
+                            description,
+                            status,
+                            remarks,
+                            maintenance_product_info,
+                            updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                        """,
+                        (
+                            do_serial,
+                            cid,
+                            maintenance_date_str,
+                            maintenance_date_str,
+                            maintenance_date_str,
+                            clean_text(maintenance_description),
+                            DEFAULT_SERVICE_STATUS,
+                            remarks_val,
+                            product_label,
+                        ),
+                    )
+                    log_activity(
+                        conn,
+                        event_type="maintenance_created",
+                        description=f"Maintenance logged for {name_val or 'customer'}",
+                        entity_type="maintenance",
+                        entity_id=None,
+                    )
+                    conn.commit()
                 if customer_pdf is not None:
                     stored_path = store_uploaded_pdf(
                         customer_pdf, CUSTOMER_DOCS_DIR, filename=f"customer_{cid}.pdf"
@@ -10669,7 +11022,9 @@ def delivery_orders_page(
             total_display = format_money(total_amount_value) or f"{_coerce_float(total_amount_value, 0.0):,.2f}"
             event_prefix = record_label.lower().replace(" ", "_") or "delivery_order"
             event_type = f"{event_prefix}_{'updated' if not existing.empty else 'created'}"
-            entity_type = "work_done" if event_prefix == "work_done" else "delivery_order"
+            entity_type = clean_text(record_type_key) or (
+                "work_done" if event_prefix == "work_done" else "delivery_order"
+            )
             status_label = clean_text(status_value) or existing_status
             status_note = f" [{status_label.title()}]" if status_label else ""
 
@@ -10734,8 +11089,10 @@ def delivery_orders_page(
           FROM delivery_orders d
           LEFT JOIN customers c ON c.customer_id = d.customer_id
           LEFT JOIN users u ON u.user_id = d.created_by
+         WHERE COALESCE(d.record_type, 'delivery_order') = ?
          ORDER BY datetime(d.created_at) DESC
         """,
+        (record_type_key,),
     )
     allowed_customers = accessible_customer_ids(conn)
     do_df = filter_delivery_orders_for_view(do_df, allowed_customers)
@@ -10826,7 +11183,7 @@ def delivery_orders_page(
     if downloads:
         st.markdown(f"#### Download {record_label.lower()}")
         selected_download = st.selectbox(
-            "Pick a delivery order", list(downloads.keys()), key="do_download_select"
+            f"Pick a {record_label_lower}", list(downloads.keys()), key="do_download_select"
         )
         path_value = downloads.get(selected_download)
         file_path = resolve_upload_path(path_value)
@@ -10840,7 +11197,9 @@ def delivery_orders_page(
         else:
             st.info("The selected delivery order file could not be found.")
     elif st.session_state.get("do_filter_text") or query_text:
-        st.caption("No matching delivery orders found for the applied filters.")
+        st.caption(
+            f"No matching {record_label_lower} records found for the applied filters."
+        )
 
 
 def quotation_page(conn, *, render_id: Optional[int] = None):
@@ -10853,7 +11212,12 @@ def quotation_page(conn, *, render_id: Optional[int] = None):
 def work_done_page(conn):
     st.subheader("✅ Work done")
     st.caption("Create, update, and download work completion slips just like delivery orders.")
-    delivery_orders_page(conn, show_heading=False, record_type_label="Work done")
+    delivery_orders_page(
+        conn,
+        show_heading=False,
+        record_type_label="Work done",
+        record_type_key="work_done",
+    )
 
 
 def service_maintenance_page(conn):
@@ -13896,10 +14260,10 @@ def main():
         if role == "admin":
             pages = [
                 "Dashboard",
+                "Customers",
                 "Work done",
                 "Delivery Orders",
                 "Quotation",
-                "Customers",
                 "Customer Summary",
                 "Scraps",
                 "Warranties",
@@ -13913,10 +14277,10 @@ def main():
         else:
             pages = [
                 "Dashboard",
+                "Customers",
                 "Work done",
                 "Delivery Orders",
                 "Quotation",
-                "Customers",
                 "Customer Summary",
                 "Warranties",
                 "Import",
