@@ -3860,20 +3860,59 @@ def export_database_to_excel(conn) -> bytes:
     return buffer.getvalue()
 
 
-def export_full_archive() -> bytes:
-    """Bundle the entire data directory and database into a portable archive."""
+def export_full_archive(
+    conn: Optional[sqlite3.Connection] = None, excel_bytes: Optional[bytes] = None
+) -> bytes:
+    """Bundle all user data, uploads, and database exports into one archive.
+
+    The archive now includes:
+    - The live SQLite database file.
+    - A full SQL dump for recovery.
+    - The Excel export of every table.
+    - Every file under the application storage directory (uploads, receipts, etc.).
+    """
 
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+    close_conn = False
+    active_conn = conn
+    if active_conn is None:
+        active_conn = sqlite3.connect(DB_PATH)
+        close_conn = True
+
+    try:
+        dump_buffer = io.StringIO()
+        for line in active_conn.iterdump():
+            dump_buffer.write(f"{line}\n")
+        dump_bytes = dump_buffer.getvalue().encode("utf-8")
+
+        if excel_bytes is None:
+            excel_bytes = export_database_to_excel(active_conn)
+
         db_path = Path(DB_PATH)
-        if db_path.exists():
-            zf.write(db_path, arcname=db_path.name)
-        if BASE_DIR.exists():
-            for path in BASE_DIR.rglob("*"):
-                if path.is_file():
-                    if db_path.exists() and path.resolve() == db_path.resolve():
-                        continue
-                    zf.write(path, arcname=str(path.relative_to(BASE_DIR)))
+
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            if db_path.exists():
+                zf.write(db_path, arcname=f"database/{db_path.name}")
+
+            if dump_bytes:
+                zf.writestr("exports/ps_crm.sql", dump_bytes)
+
+            if excel_bytes:
+                zf.writestr(
+                    "exports/ps_crm.xlsx",
+                    excel_bytes,
+                )
+
+            if BASE_DIR.exists():
+                for path in BASE_DIR.rglob("*"):
+                    if path.is_file():
+                        if db_path.exists() and path.resolve() == db_path.resolve():
+                            continue
+                        zf.write(path, arcname=str(Path("storage") / path.relative_to(BASE_DIR)))
+    finally:
+        if close_conn:
+            active_conn.close()
+
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -5283,7 +5322,7 @@ def dashboard(conn):
             st.session_state.show_deleted_panel = False
 
         excel_bytes = export_database_to_excel(conn)
-        archive_bytes = export_full_archive()
+        archive_bytes = export_full_archive(conn, excel_bytes)
         download_cols = st.columns([0.5, 0.5])
         with download_cols[0]:
             st.download_button(
@@ -6546,7 +6585,7 @@ def customers_page(conn):
                                 status,
                                 payment_receipt_path,
                                 record_type
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'delivery_order')
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'delivery_order')
                             """,
                             (
                                 do_serial,
@@ -7987,6 +8026,7 @@ def _render_service_section(conn, *, show_heading: bool = True):
                s.condition_remarks,
                s.bill_amount,
                s.bill_document_path,
+                s.payment_receipt_path,
                s.updated_at,
                s.created_by,
                COALESCE(c.name, cdo.name, '(unknown)') AS customer,
@@ -8045,6 +8085,10 @@ def _render_service_section(conn, *, show_heading: bool = True):
             service_df["bill_document_display"] = service_df["bill_document_path"].apply(
                 lambda x: "📄" if clean_text(x) else ""
             )
+        if "payment_receipt_path" in service_df.columns:
+            service_df["payment_receipt_display"] = service_df["payment_receipt_path"].apply(
+                lambda x: "📎" if clean_text(x) else ""
+            )
         display = service_df.rename(
             columns={
                 "do_number": "DO Serial",
@@ -8060,11 +8104,14 @@ def _render_service_section(conn, *, show_heading: bool = True):
                 "condition_remarks": "Condition notes",
                 "bill_amount_display": "Bill amount",
                 "bill_document_display": "Bill document",
+                "payment_receipt_display": "Receipt",
                 "customer": "Customer",
                 "doc_count": "Documents",
             }
         )
-        display = display.drop(columns=["bill_document_path"], errors="ignore")
+        display = display.drop(
+            columns=["bill_document_path", "payment_receipt_path"], errors="ignore"
+        )
         st.markdown("### Service history")
         st.dataframe(
             display.drop(columns=["updated_at", "service_id"], errors="ignore"),
@@ -8187,6 +8234,30 @@ def _render_service_section(conn, *, show_heading: bool = True):
             )
         elif existing_bill_path:
             st.caption("Bill file not found. Upload a fresh copy to replace it.")
+        receipt_col1, receipt_col2 = st.columns([1, 1])
+        existing_receipt_path = clean_text(selected_record.get("payment_receipt_path"))
+        resolved_receipt = resolve_upload_path(existing_receipt_path)
+        with receipt_col1:
+            receipt_upload = st.file_uploader(
+                "Upload payment receipt (PDF or image)",
+                type=["pdf", "png", "jpg", "jpeg", "webp"],
+                key=f"service_edit_receipt_upload_{selected_service_id}",
+            )
+        with receipt_col2:
+            clear_receipt = st.checkbox(
+                "Remove receipt",
+                value=False,
+                key=f"service_edit_receipt_clear_{selected_service_id}",
+            )
+        if resolved_receipt and resolved_receipt.exists():
+            st.download_button(
+                "Download receipt",
+                data=resolved_receipt.read_bytes(),
+                file_name=resolved_receipt.name,
+                key=f"service_receipt_download_{selected_service_id}",
+            )
+        elif existing_receipt_path:
+            st.caption("Receipt file not found. Upload a new copy to replace it.")
         if st.button("Save updates", key="save_service_updates"):
             (
                 service_date_str,
@@ -8246,6 +8317,25 @@ def _render_service_section(conn, *, show_heading: bool = True):
                             pass
                     bill_path_value = None
                     removed_bill = True
+                receipt_path_value = clean_text(selected_record.get("payment_receipt_path"))
+                replaced_receipt = False
+                cleared_receipt = False
+                if receipt_upload is not None:
+                    receipt_path_value = store_payment_receipt(
+                        receipt_upload,
+                        identifier=f"service_{selected_service_id}_receipt",
+                        target_dir=SERVICE_BILL_DIR,
+                    )
+                    replaced_receipt = bool(receipt_path_value)
+                elif clear_receipt and receipt_path_value:
+                    old_receipt = resolve_upload_path(receipt_path_value)
+                    if old_receipt and old_receipt.exists():
+                        try:
+                            old_receipt.unlink()
+                        except Exception:
+                            pass
+                    receipt_path_value = None
+                    cleared_receipt = True
                 conn.execute(
                     """
                     UPDATE services
@@ -8258,6 +8348,7 @@ def _render_service_section(conn, *, show_heading: bool = True):
                         condition_remarks = ?,
                         bill_amount = ?,
                         bill_document_path = ?,
+                        payment_receipt_path = COALESCE(?, payment_receipt_path),
                         updated_at = datetime('now')
                     WHERE service_id = ?
                     """,
@@ -8271,6 +8362,7 @@ def _render_service_section(conn, *, show_heading: bool = True):
                         condition_notes_update,
                         bill_amount_update,
                         bill_path_value,
+                        receipt_path_value,
                         int(selected_service_id),
                     ),
                 )
@@ -8294,6 +8386,10 @@ def _render_service_section(conn, *, show_heading: bool = True):
                     message_bits.append("Invoice replaced")
                 elif removed_bill:
                     message_bits.append("Invoice removed")
+                if replaced_receipt:
+                    message_bits.append("Receipt uploaded")
+                elif cleared_receipt:
+                    message_bits.append("Receipt removed")
                 st.success(". ".join(message_bits))
                 _safe_rerun()
 
@@ -10711,6 +10807,7 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
                m.description,
                m.status,
                m.remarks,
+               m.payment_receipt_path,
                m.updated_at,
                m.created_by,
                COALESCE(c.name, cdo.name, '(unknown)') AS customer,
@@ -10762,6 +10859,10 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
         maintenance_df.loc[maintenance_df["Last update"].isna(), "Last update"] = None
         if "status" in maintenance_df.columns:
             maintenance_df["status"] = maintenance_df["status"].apply(lambda x: clean_text(x) or DEFAULT_SERVICE_STATUS)
+        if "payment_receipt_path" in maintenance_df.columns:
+            maintenance_df["payment_receipt_display"] = maintenance_df[
+                "payment_receipt_path"
+            ].apply(lambda x: "📎" if clean_text(x) else "")
         display = maintenance_df.rename(
             columns={
                 "do_number": "DO Serial",
@@ -10773,6 +10874,7 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
                 "description": "Description",
                 "status": "Status",
                 "remarks": "Remarks",
+                "payment_receipt_display": "Receipt",
                 "customer": "Customer",
                 "doc_count": "Documents",
             }
@@ -10846,6 +10948,30 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
             value=clean_text(selected_record.get("remarks")) or "",
             key=f"maintenance_edit_{selected_maintenance_id}",
         )
+        existing_receipt_path = clean_text(selected_record.get("payment_receipt_path"))
+        resolved_receipt = resolve_upload_path(existing_receipt_path)
+        receipt_cols = st.columns([1, 1])
+        with receipt_cols[0]:
+            maintenance_receipt_upload = st.file_uploader(
+                "Upload payment receipt (PDF or image)",
+                type=["pdf", "png", "jpg", "jpeg", "webp"],
+                key=f"maintenance_edit_receipt_{selected_maintenance_id}",
+            )
+        with receipt_cols[1]:
+            clear_maintenance_receipt = st.checkbox(
+                "Remove receipt",
+                value=False,
+                key=f"maintenance_clear_receipt_{selected_maintenance_id}",
+            )
+        if resolved_receipt and resolved_receipt.exists():
+            st.download_button(
+                "Download receipt",
+                data=resolved_receipt.read_bytes(),
+                file_name=resolved_receipt.name,
+                key=f"maintenance_receipt_download_{selected_maintenance_id}",
+            )
+        elif existing_receipt_path:
+            st.caption("Receipt file not found. Upload a new copy to replace it.")
         if st.button("Save maintenance updates", key="save_maintenance_updates"):
             (
                 maintenance_date_str,
@@ -10866,6 +10992,25 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
                 st.error("Select a start date for this maintenance entry.")
                 valid_update = False
             if valid_update:
+                receipt_path_value = existing_receipt_path
+                replaced_receipt = False
+                cleared_receipt = False
+                if maintenance_receipt_upload is not None:
+                    receipt_path_value = store_payment_receipt(
+                        maintenance_receipt_upload,
+                        identifier=f"maintenance_{selected_maintenance_id}_receipt",
+                        target_dir=MAINTENANCE_DOCS_DIR,
+                    )
+                    replaced_receipt = bool(receipt_path_value)
+                elif clear_maintenance_receipt and receipt_path_value:
+                    old_receipt = resolve_upload_path(receipt_path_value)
+                    if old_receipt and old_receipt.exists():
+                        try:
+                            old_receipt.unlink()
+                        except Exception:
+                            pass
+                    receipt_path_value = None
+                    cleared_receipt = True
                 conn.execute(
                     """
                     UPDATE maintenance_records
@@ -10874,6 +11019,7 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
                         maintenance_date = ?,
                         maintenance_start_date = ?,
                         maintenance_end_date = ?,
+                        payment_receipt_path = COALESCE(?, payment_receipt_path),
                         updated_at = datetime('now')
                     WHERE maintenance_id = ?
                     """,
@@ -10883,6 +11029,7 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
                         maintenance_date_str,
                         maintenance_start_str,
                         maintenance_end_str,
+                        receipt_path_value,
                         int(selected_maintenance_id),
                     ),
                 )
@@ -10900,6 +11047,13 @@ def _render_maintenance_section(conn, *, show_heading: bool = True):
                     entity_type="maintenance",
                     entity_id=int(selected_maintenance_id),
                 )
+                message_bits = ["Maintenance record updated."]
+                if replaced_receipt:
+                    message_bits.append("Receipt uploaded")
+                elif cleared_receipt:
+                    message_bits.append("Receipt removed")
+                st.success(" ".join(message_bits))
+                _safe_rerun()
                 st.success("Maintenance record updated.")
                 _safe_rerun()
 
@@ -11160,7 +11314,13 @@ def delivery_orders_page(
                 existing_status = clean_text(existing.iloc[0].get("status")) or "pending"
                 existing_receipt = clean_text(existing.iloc[0].get("payment_receipt_path"))
             locked_record = existing_status.lower() in closed_statuses
-            if locked_record:
+            receipt_only_update = (
+                locked_record
+                and status_value == existing_status
+                and existing_status.lower() == "paid"
+                and receipt_upload is not None
+            )
+            if locked_record and not receipt_only_update:
                 st.warning(
                     f"{record_label} {cleaned_number} is locked because it is marked as {existing_status}."
                 )
@@ -11183,6 +11343,23 @@ def delivery_orders_page(
                 if not receipt_path:
                     st.error("Upload a receipt before marking this record as paid.")
                     return
+            if receipt_only_update:
+                conn.execute(
+                    """
+                    UPDATE delivery_orders
+                       SET payment_receipt_path=COALESCE(?, payment_receipt_path),
+                           updated_at=datetime('now')
+                     WHERE do_number=? AND COALESCE(record_type, 'delivery_order') = ?
+                    """,
+                    (
+                        receipt_path,
+                        cleaned_number,
+                        record_type_key,
+                    ),
+                )
+                conn.commit()
+                st.success("Receipt added to locked record.")
+                return
             items_clean, total_amount_value = normalize_delivery_items(
                 st.session_state.get("delivery_order_items_rows", [])
             )
@@ -13734,9 +13911,9 @@ def reports_page(conn):
 
     selectable_ids: list[int] = []
     if not selectable_reports.empty and "report_id" in selectable_reports.columns:
-        selectable_ids = (
-            selectable_reports["report_id"].astype(int).tolist()
-        )
+        selectable_ids = [
+            int(val) for val in selectable_reports["report_id"].tolist() if not pd.isna(val)
+        ]
 
     report_choices = [None] + selectable_ids
 
@@ -13751,7 +13928,17 @@ def reports_page(conn):
     if "report_edit_select_pending" in st.session_state:
         pending_selection = st.session_state.pop("report_edit_select_pending")
         if pending_selection is not None:
-            st.session_state["report_edit_select"] = pending_selection
+            try:
+                st.session_state["report_edit_select"] = int(pending_selection)
+            except Exception:
+                st.session_state["report_edit_select"] = None
+
+    current_selection = st.session_state.get("report_edit_select")
+    try:
+        if current_selection is not None and int(current_selection) not in report_choices:
+            st.session_state["report_edit_select"] = None
+    except Exception:
+        st.session_state["report_edit_select"] = None
 
     selected_report_id = st.selectbox(
         "Load an existing report",
