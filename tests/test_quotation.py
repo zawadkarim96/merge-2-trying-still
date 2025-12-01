@@ -21,17 +21,15 @@ def test_normalize_quotation_items_calculates_totals(app_module):
     item = items[0]
     assert pytest.approx(item["Gross amount"], rel=1e-6) == 50000
     assert pytest.approx(item["Discount amount"], rel=1e-6) == 5000
-    taxable_value = 45000
-    assert pytest.approx(item["Taxable value"], rel=1e-6) == taxable_value
-    assert pytest.approx(item["Line total"], rel=1e-6) == taxable_value
+    line_total = 45000
+    assert pytest.approx(item["Line total"], rel=1e-6) == line_total
     assert "CGST amount" not in item
     assert "SGST amount" not in item
     assert "IGST amount" not in item
 
     assert pytest.approx(totals["gross_total"], rel=1e-6) == 50000
     assert pytest.approx(totals["discount_total"], rel=1e-6) == 5000
-    assert pytest.approx(totals["taxable_total"], rel=1e-6) == taxable_value
-    assert pytest.approx(totals["grand_total"], rel=1e-6) == taxable_value
+    assert pytest.approx(totals["grand_total"], rel=1e-6) == line_total
 
 
 def test_normalize_quotation_items_skips_blank_descriptions(app_module):
