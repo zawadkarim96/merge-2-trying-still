@@ -23,7 +23,7 @@ class AppConfig:
     db_host: str = "localhost"
     db_name: str = "crmpsengltd_crm_db"
     db_user: str = "crmpsengltd_crm_user"
-    db_password: str = "r9tJYARukZlyB6Zc"
+    db_password: str = "r9tJYARukZ!yB6zC"
 
     @property
     def db_is_sqlite(self) -> bool:
@@ -55,7 +55,7 @@ def load_config() -> AppConfig:
     db_host = os.environ.get("DB_HOST", "localhost")
     db_name = os.environ.get("DB_NAME", "crmpsengltd_crm_db")
     db_user = os.environ.get("DB_USER", "crmpsengltd_crm_user")
-    db_password = os.environ.get("DB_PASSWORD", "r9tJYARukZlyB6Zc")
+    db_password = os.environ.get("DB_PASSWORD", "r9tJYARukZ!yB6zC")
 
     retention_days = os.environ.get("PS_SALES_UPLOAD_RETENTION_DAYS")
     upload_retention = (
