@@ -45,3 +45,4 @@ Staff can back up or migrate the application by copying that folder. Deleting it
 ## Troubleshooting
 - If Python is not installed or not on your `PATH`, install it from [python.org](https://www.python.org/downloads/) (Windows) or via your package manager (macOS/Linux).
 - To reset everything, delete the `.venv` folder and rerun the launcher to recreate a clean environment.
+- After repository cleanup, run the bundled test suite with `pytest` from the repository root. All tests should pass, confirming that removing legacy PS-SALES copies did not break the active application paths.
