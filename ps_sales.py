@@ -34,6 +34,10 @@ class AppConfig:
     login_max_attempts: int
     login_lockout_minutes: int
     pre_due_warning_days: int
+    db_host: str = "localhost"
+    db_name: str = "crmpsengltd_crm_db"
+    db_user: str = "crmpsengltd_crm_user"
+    db_password: str = "r9tJYARukZlyB6Zc"
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +73,11 @@ def load_config() -> AppConfig:
 
     db_url = os.getenv("PS_SALES_DB_URL") or f"sqlite:///{data_dir / 'ps_sales.db'}"
 
+    db_host = os.getenv("DB_HOST", "localhost")
+    db_name = os.getenv("DB_NAME", "crmpsengltd_crm_db")
+    db_user = os.getenv("DB_USER", "crmpsengltd_crm_user")
+    db_password = os.getenv("DB_PASSWORD", "r9tJYARukZlyB6Zc")
+
     def _int_env(name: str, default: int) -> int:
         try:
             return int(os.getenv(name, ""))
@@ -95,6 +104,10 @@ def load_config() -> AppConfig:
         login_max_attempts=_int_env("PS_SALES_LOGIN_MAX_ATTEMPTS", 5),
         login_lockout_minutes=_int_env("PS_SALES_LOGIN_LOCKOUT_MINUTES", 15),
         pre_due_warning_days=_int_env("PS_SALES_PRE_DUE_WARNING_DAYS", 3),
+        db_host=db_host,
+        db_name=db_name,
+        db_user=db_user,
+        db_password=db_password,
     )
 
 

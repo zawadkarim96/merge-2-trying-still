@@ -20,6 +20,10 @@ class AppConfig:
     login_max_attempts: int
     login_lockout_minutes: int
     pre_due_warning_days: int
+    db_host: str = "localhost"
+    db_name: str = "crmpsengltd_crm_db"
+    db_user: str = "crmpsengltd_crm_user"
+    db_password: str = "r9tJYARukZlyB6Zc"
 
     @property
     def db_is_sqlite(self) -> bool:
@@ -48,6 +52,11 @@ def load_config() -> AppConfig:
         db_path = data_dir / "ps_sales.db"
         db_url = f"sqlite:///{db_path}" if os.name != "nt" else f"sqlite:///{db_path.as_posix()}"
 
+    db_host = os.environ.get("DB_HOST", "localhost")
+    db_name = os.environ.get("DB_NAME", "crmpsengltd_crm_db")
+    db_user = os.environ.get("DB_USER", "crmpsengltd_crm_user")
+    db_password = os.environ.get("DB_PASSWORD", "r9tJYARukZlyB6Zc")
+
     retention_days = os.environ.get("PS_SALES_UPLOAD_RETENTION_DAYS")
     upload_retention = (
         timedelta(days=int(retention_days)) if retention_days else None
@@ -74,6 +83,10 @@ def load_config() -> AppConfig:
         login_max_attempts=max_attempts,
         login_lockout_minutes=lockout_minutes,
         pre_due_warning_days=warning_days,
+        db_host=db_host,
+        db_name=db_name,
+        db_user=db_user,
+        db_password=db_password,
     )
 
 
