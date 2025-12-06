@@ -8638,13 +8638,12 @@ def _resolve_letterhead_path(template_choice: Optional[str] = None) -> Optional[
         sandbox_letterhead,
         base_dir / "letterhead.png",
         base_dir / "letterhead",
-        base_dir / "PS-SALES-main" / "ps_letterhead.png",
         base_dir / "ps_letterhead.png",
     ]
 
     preferred: list[Path] = []
     if template_choice == "PS letterhead":
-        preferred = [sandbox_letterhead, base_dir / "PS-SALES-main" / "ps_letterhead.png", base_dir / "ps_letterhead.png"]
+        preferred = [sandbox_letterhead, base_dir / "ps_letterhead.png"]
     elif template_choice == "Default letterhead":
         preferred = [sandbox_letterhead, base_dir / "letterhead.png", base_dir / "letterhead"]
 
