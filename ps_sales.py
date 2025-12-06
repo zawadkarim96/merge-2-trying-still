@@ -37,7 +37,7 @@ class AppConfig:
     db_host: str = "localhost"
     db_name: str = "crmpsengltd_crm_db"
     db_user: str = "crmpsengltd_crm_user"
-    db_password: str = "r9tJYARukZlyB6Zc"
+    db_password: str = "r9tJYARukZ!yB6zC"
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +76,7 @@ def load_config() -> AppConfig:
     db_host = os.getenv("DB_HOST", "localhost")
     db_name = os.getenv("DB_NAME", "crmpsengltd_crm_db")
     db_user = os.getenv("DB_USER", "crmpsengltd_crm_user")
-    db_password = os.getenv("DB_PASSWORD", "r9tJYARukZlyB6Zc")
+    db_password = os.getenv("DB_PASSWORD", "r9tJYARukZ!yB6zC")
 
     def _int_env(name: str, default: int) -> int:
         try:
