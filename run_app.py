@@ -102,7 +102,22 @@ def ensure_pywebview_available(venv_python: Path) -> None:
         )
     except LauncherError:
         print("pywebview not found in the virtual environment. Installing ...")
-        run_command([str(venv_python), "-m", "pip", "--disable-pip-version-check", "install", "pywebview>=4.4"])
+        try:
+            run_command(
+                [
+                    str(venv_python),
+                    "-m",
+                    "pip",
+                    "--disable-pip-version-check",
+                    "install",
+                    "pywebview>=4.4",
+                ]
+            )
+        except LauncherError as exc:
+            raise LauncherError(
+                "Failed to install pywebview. Please run 'pip install pywebview>=4.4' "
+                "inside the virtual environment and try again."
+            ) from exc
 
 
 def _select_launch_interpreter(venv_python: Path) -> Path:
