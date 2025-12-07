@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Iterable, Optional, Sequence
 import secrets
 import hashlib
+import sys
+import tempfile
 
 DEFAULT_ITERATIONS = 260_000
 
@@ -48,21 +50,29 @@ class AppConfig:
 def _default_data_dir() -> Path:
     """Return a writable data directory for the sales app.
 
-    On developer machines we use ``~/.ps_sales``. Containerised platforms can
-    override this via ``PS_SALES_DATA_DIR``; if the default location is not
-    writable we fall back to ``.ps_sales`` inside the working directory.
+    Deployments can override the location via ``PS_SALES_DATA_DIR``. Otherwise,
+    choose an OS-appropriate application data folder that lives **outside** the
+    repository so deployments do not pollute the cloned source. If that
+    location is unavailable we fall back to a temporary directory.
     """
 
     override = os.getenv("PS_SALES_DATA_DIR")
     if override:
         return Path(override).expanduser()
 
-    home_candidate = Path.home() / ".ps_sales"
+    if sys.platform.startswith("win"):
+        base_dir = Path(os.getenv("APPDATA", Path.home()))
+    elif sys.platform == "darwin":
+        base_dir = Path.home() / "Library" / "Application Support"
+    else:
+        base_dir = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+
+    preferred = base_dir / "ps-business-suites" / "sales"
     try:
-        home_candidate.mkdir(parents=True, exist_ok=True)
-        return home_candidate
+        preferred.mkdir(parents=True, exist_ok=True)
+        return preferred
     except OSError:
-        fallback = Path.cwd() / ".ps_sales"
+        fallback = Path(tempfile.gettempdir()) / "ps-sales"
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback
 
