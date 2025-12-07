@@ -83,6 +83,28 @@ def install_dependencies(venv_python: Path) -> None:
     SETUP_STAMP.write_text(fingerprint)
 
 
+def ensure_pywebview_available(venv_python: Path) -> None:
+    """Install pywebview inside the virtual environment if it is missing.
+
+    Some deployments may reuse an existing virtual environment that predates
+    the addition of ``pywebview`` to ``requirements.txt``. This helper makes
+    the launcher resilient by bootstrapping the dependency on demand when it
+    is not already installed.
+    """
+
+    try:
+        run_command(
+            [
+                str(venv_python),
+                "-c",
+                "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('webview') else 1)",
+            ]
+        )
+    except LauncherError:
+        print("pywebview not found in the virtual environment. Installing ...")
+        run_command([str(venv_python), "-m", "pip", "--disable-pip-version-check", "install", "pywebview>=4.4"])
+
+
 def _select_launch_interpreter(venv_python: Path) -> Path:
     """Return the interpreter that should host the desktop app."""
 
@@ -109,6 +131,7 @@ def main() -> None:
     try:
         venv_python = ensure_virtual_environment()
         install_dependencies(venv_python)
+        ensure_pywebview_available(venv_python)
         launch_desktop_app(venv_python)
     except LauncherError as exc:
         print(f"\nERROR: {exc}\n")
