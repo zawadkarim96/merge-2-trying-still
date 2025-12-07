@@ -8,6 +8,10 @@
 - v7.8: Customer summary groups unnamed customers under "(blank)" so their contact info is still accessible.
 - v7.9: Staff can only submit the current day's daily report, file weekly updates on Saturdays, and record monthly reports for the active month. Client imports better distinguish repeat purchases with different generators to avoid duplicate flags.
 
+### Recent fixes
+- `run_app.py` now bootstraps `pywebview` automatically and shows a clear message if the install fails, so the desktop window opens reliably even when the module was missing on the server.
+- The sales launcher stores its database, uploads, and templates in the per-OS app data folder instead of the repository checkout to avoid permission issues on deployed servers.
+
 ## Run Without Touching the Command Line
 These launchers create a dedicated virtual environment, install dependencies from `requirements.txt`, and then open the Streamlit app inside the native desktop shell (no browser required). After the first setup run the cached environment is reused automatically, so relaunching is instant. You only need Python 3.9+ installed. You can still run `streamlit run main.py` for the traditional browser experience—both approaches share the exact same database and uploads.
 

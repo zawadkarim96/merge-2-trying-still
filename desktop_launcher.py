@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import subprocess
 import shutil
 import socket
 import sys
@@ -31,15 +32,6 @@ from pathlib import Path
 from storage_paths import get_storage_dir
 
 from streamlit.web import bootstrap
-
-try:  # ``pywebview`` provides the native desktop window.
-    import webview
-except ImportError as exc:  # pragma: no cover - dependency should be present
-    raise RuntimeError(
-        "pywebview is required for the desktop launcher. "
-        "Please reinstall the application dependencies."
-    ) from exc
-
 
 APP_SCRIPT_NAME = os.getenv("PS_APP_SCRIPT", "main.py")
 IMPORT_TEMPLATE_NAME = "import_template.xlsx"
@@ -67,6 +59,7 @@ def ensure_template_file(storage_dir: Path) -> None:
 
 
 def main() -> None:
+    webview = _import_pywebview()
     storage_dir = get_storage_dir()
     ensure_template_file(storage_dir)
 
@@ -132,6 +125,48 @@ def _wait_for_server(port: int, *, timeout: float) -> bool:
             else:
                 return True
     return False
+
+
+def _import_pywebview():
+    """Import ``pywebview``, installing it on demand if missing."""
+
+    try:
+        import webview  # type: ignore
+    except ImportError:
+        _install_pywebview()
+        try:
+            import webview  # type: ignore
+        except ImportError as exc:  # pragma: no cover - defensive fallback
+            raise RuntimeError(
+                "pywebview is required for the desktop launcher. "
+                "Please reinstall the application dependencies."
+            ) from exc
+
+    return webview
+
+
+def _install_pywebview() -> None:
+    """Attempt to install ``pywebview`` using the active interpreter."""
+
+    try:
+        subprocess.check_call(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "--disable-pip-version-check",
+                "install",
+                "pywebview>=4.4",
+            ],
+            cwd=str(Path(__file__).resolve().parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            "pywebview installation failed. Please run 'pip install pywebview>=4.4' "
+            "inside your environment and retry."
+        ) from exc
 
 
 if __name__ == "__main__":
