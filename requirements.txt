@@ -7,3 +7,4 @@ reportlab>=3.6
 pillow
 pypdf
 pytesseract
+pywebview>=4.4
